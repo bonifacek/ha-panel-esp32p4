@@ -1,0 +1,164 @@
+{
+  "default_screen": 0,
+  "screens": [
+    {
+      "name": "Informacje ogólne",
+      "tiles": [
+        {
+          "label": "Salon",
+          "rows": [
+            {
+              "entity_id": "sensor.salon_temp_temperature",
+              "label": " ",
+              "attribute": "",
+              "unit": "°C",
+              "sensor_type": "temperature"
+            },
+            {
+              "entity_id": "sensor.salon_temp_humidity",
+              "label": " ",
+              "attribute": "",
+              "unit": "%",
+              "sensor_type": "humidity"
+            }
+          ],
+          "x": 0,
+          "y": 0,
+          "w": 320,
+          "h": 64,
+          "layout": "horizontal"
+        },
+        {
+          "label": "Drzewko",
+          "rows": [
+            {
+              "entity_id": "sensor.kwiat_srodowiskowy_temperature",
+              "label": " ",
+              "attribute": "",
+              "unit": "°C",
+              "sensor_type": "temperature"
+            },
+            {
+              "entity_id": "sensor.kwiat_srodowiskowy_soil_moisture",
+              "label": "gleba",
+              "attribute": "",
+              "unit": "%",
+              "sensor_type": "humidity"
+            },
+            {
+              "entity_id": "sensor.kwiat_srodowiskowy_battery_state",
+              "label": "Bateria",
+              "attribute": "",
+              "unit": ""
+            }
+          ],
+          "x": 800,
+          "y": 0,
+          "w": 224,
+          "h": 192
+        },
+        {
+          "label": "Pogoda",
+          "rows": [
+            {
+              "entity_id": "weather.forecast_glowackiego",
+              "label": "Pogoda",
+              "attribute": "",
+              "unit": ""
+            },
+            {
+              "entity_id": "weather.forecast_glowackiego",
+              "label": "Temperatura",
+              "attribute": "temperature",
+              "unit": "°C"
+            },
+            {
+              "entity_id": "weather.forecast_glowackiego",
+              "label": "Wilgotność",
+              "attribute": "humidity",
+              "unit": "%"
+            },
+            {
+              "entity_id": "weather.forecast_glowackiego",
+              "label": "Wiatr",
+              "attribute": "wind_speed",
+              "unit": "km/h"
+            },
+            {
+              "entity_id": "weather.forecast_glowackiego",
+              "label": "Ciśnienie",
+              "attribute": "pressure",
+              "unit": "hPa"
+            }
+          ],
+          "x": 0,
+          "y": 144,
+          "w": 320,
+          "h": 272
+        },
+        {
+          "label": "Kuchnia",
+          "layout": "horizontal",
+          "x": 0,
+          "y": 64,
+          "w": 320,
+          "h": 80,
+          "rows": [
+            {
+              "entity_id": "sensor.kuchnia_temp_temperature",
+              "label": " ",
+              "attribute": "",
+              "unit": "°C",
+              "sensor_type": "temperature"
+            },
+            {
+              "entity_id": "sensor.kuchnia_temp_humidity",
+              "label": " ",
+              "attribute": "",
+              "unit": "%",
+              "sensor_type": "humidity"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Łukasz",
+      "tiles": [
+        {
+          "label": "Router",
+          "rows": [
+            {
+              "entity_id": "sensor.ucg_fiber_cpu_utilization",
+              "label": "UCG Fiber CPU",
+              "attribute": "",
+              "unit": "%"
+            },
+            {
+              "entity_id": "sensor.ucg_fiber_ucg_fiber_cpu_temperature",
+              "label": "UCG Fiber CPU temp",
+              "attribute": "",
+              "unit": "°C"
+            },
+            {
+              "entity_id": "sensor.ucg_fiber_port_5_rx",
+              "label": "WAN download",
+              "attribute": "",
+              "unit": "Mbit/s"
+            },
+            {
+              "entity_id": "sensor.ucg_fiber_port_5_tx",
+              "label": "WAN upload",
+              "attribute": "",
+              "unit": "Mbit/s"
+            }
+          ],
+          "x": 0,
+          "y": 0,
+          "w": 416,
+          "h": 224
+        }
+      ]
+    }
+  ]
+}

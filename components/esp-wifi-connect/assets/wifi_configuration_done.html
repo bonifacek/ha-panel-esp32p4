@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+<head>
+    <title>WiFi Configuration</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <style>
+        body{margin:0;padding:0;background:#eef3f6;color:#16232c}
+        .container{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;font-family:Arial,sans-serif;box-sizing:border-box;padding:20px;text-align:center}
+        .checkmark{width:120px;height:120px;margin-bottom:24px}
+        .message{font-size:20px}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <svg class="checkmark" viewBox="0 0 52 52">
+            <circle cx="26" cy="26" r="25" fill="none" stroke="#0f6b63" stroke-width="2"/>
+            <path fill="none" stroke="#0f6b63" stroke-width="3" d="M14.1 27.2l7.1 7.2 16.7-16.8"/>
+        </svg>
+        <div class="message">Device will restart in <span id="countdown">3</span> seconds</div>
+    </div>
+    <script>
+        window.addEventListener('load',()=>{
+            let count=3;
+            const countdown=document.getElementById('countdown');
+            const timer=setInterval(()=>{
+                count--;
+                countdown.textContent=count;
+                if(count<=0){
+                    clearInterval(timer);
+                    fetch('/reboot',{method:'POST'}).then(()=>window.close()).catch(console.error);
+                }
+            },1000);
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,101 @@
+<!doctype html>
+<html>
+<head>
+    <title>WiFi Configuration</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <style>
+        body{font-family:Arial,sans-serif;margin:0;padding:24px;background:#eef3f6;color:#16232c}
+        main{max-width:520px;margin:0 auto;background:#fff;border:1px solid #d8e1e7;border-radius:8px;padding:20px}
+        h1{font-size:24px;margin:0 0 18px}
+        h3{margin:18px 0 8px}
+        label{display:block;margin:12px 0 6px}
+        input{width:100%;box-sizing:border-box;padding:11px;border:1px solid #b8c5cc;border-radius:6px}
+        button,input[type=submit]{margin-top:12px;padding:11px 14px;border:0;border-radius:6px;background:#0f6b63;color:#fff;font-weight:700}
+        ul{padding-left:18px}
+        #ap_list{margin-top:18px;border-top:1px solid #d8e1e7;padding-top:12px}
+        #ap_list a{display:block;padding:7px 0;color:#0f6b63;text-decoration:none}
+        .error{color:#b00020;text-align:center}
+    </style>
+</head>
+<body>
+<main>
+    <h1>WiFi Configuration</h1>
+    <form action="/submit" method="post" onsubmit="submitForm(event)">
+        <div id="saved_list_container" style="display:none">
+            <h3>Saved WiFi</h3>
+            <ul id="saved_list"></ul>
+        </div>
+        <h3>New WiFi</h3>
+        <p class="error" id="error"></p>
+        <label for="ssid">SSID</label>
+        <input type="text" id="ssid" name="ssid" required>
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password">
+        <input type="submit" value="Connect" id="button">
+        <p id="ap_list"></p>
+    </form>
+</main>
+<script>
+const button=document.getElementById('button');
+const error=document.getElementById('error');
+const ssid=document.getElementById('ssid');
+
+function renderSavedList(data){
+    const box=document.getElementById('saved_list_container');
+    const list=document.getElementById('saved_list');
+    list.innerHTML='';
+    data.forEach((name,index)=>{
+        const li=document.createElement('li');
+        li.innerHTML=`<span>${name}</span> <button type="button" onclick="deleteItem(${index})">Delete</button>`;
+        list.appendChild(li);
+    });
+    box.style.display=data.length?'block':'none';
+}
+
+function deleteItem(index){
+    fetch('/saved/delete?index='+index).then(()=>loadSavedList());
+}
+
+function loadSavedList(){
+    fetch('/saved/list').then(r=>r.json()).then(renderSavedList).catch(()=>{});
+}
+
+function loadAPList(){
+    if(button.disabled)return;
+    fetch('/scan').then(r=>r.json()).then(data=>{
+        const ap=document.getElementById('ap_list');
+        ap.innerHTML='<strong>Select 2.4 GHz WiFi:</strong>';
+        data.forEach(item=>{
+            const a=document.createElement('a');
+            a.href='#';
+            a.textContent=`${item.ssid} (${item.rssi} dBm) ${item.authmode===0?'open':'secured'}`;
+            a.onclick=()=>{ssid.value=item.ssid;return false};
+            ap.appendChild(a);
+        });
+        setTimeout(loadAPList,5000);
+    }).catch(()=>setTimeout(loadAPList,5000));
+}
+
+async function submitForm(event){
+    event.preventDefault();
+    button.disabled=true;
+    error.textContent='';
+    try{
+        const response=await fetch('/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+            ssid:ssid.value,
+            password:document.getElementById('password').value
+        })});
+        const data=await response.json();
+        if(!data.success)throw new Error(data.error||'Connection failed');
+        window.location.href='/done.html';
+    }catch(err){
+        error.textContent=err.message;
+        button.disabled=false;
+    }
+}
+
+document.addEventListener('DOMContentLoaded',()=>{loadSavedList();loadAPList()});
+</script>
+</body>
+</html>

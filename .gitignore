@@ -1,0 +1,22 @@
+# ESP-IDF build artifacts
+build/
+sdkconfig.old
+
+# Managed components are downloaded automatically by idf.py
+# Restore with: idf.py update-dependencies
+managed_components/
+
+# Python cache
+aplikacja/__pycache__/
+**/__pycache__/
+*.pyc
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db

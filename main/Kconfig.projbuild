@@ -1,0 +1,31 @@
+menu "SUPLA MQTT Panel"
+
+config SUPLA_WIFI_SSID
+    string "Wi-Fi SSID"
+    default ""
+    help
+        Optional compile-time Wi-Fi SSID. If empty, use the captive portal from esp-wifi-connect.
+
+config SUPLA_WIFI_PASSWORD
+    string "Wi-Fi password"
+    default ""
+
+config SUPLA_MQTT_URI
+    string "MQTT broker URI"
+    default "mqtts://mqtt12.supla.org:8883"
+    help
+        Examples: mqtt://192.168.1.10:1883 or mqtts://broker.example.com:8883
+
+config SUPLA_MQTT_USERNAME
+    string "MQTT username"
+    default ""
+
+config SUPLA_MQTT_PASSWORD
+    string "MQTT password"
+    default ""
+
+config SUPLA_MQTT_CLIENT_ID
+    string "MQTT client id"
+    default "esp32p4-supla-panel"
+
+endmenu

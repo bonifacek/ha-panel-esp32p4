@@ -1,0 +1,49 @@
+ Volume in drive H is Zapas
+ Volume Serial Number is 2831-3577
+
+ Directory of h:\!_esp32p4_wifi\JC8012P4A1C_I_W_Y\1-Demo\idf-examples\common_components\esp_lcd_jd9365
+
+23.05.2026  17:29    <DIR>          .
+23.05.2026  17:25    <DIR>          ..
+18.03.2025  13:35                64 .component_hash
+25.02.2025  17:51               406 CHANGELOG.md
+25.02.2025  17:51               188 CMakeLists.txt
+18.03.2025  13:36            19ÿ839 esp_lcd_jd9365.c
+25.02.2025  17:51               464 idf_component.yml
+10.05.2026  19:14    <DIR>          include
+25.02.2025  17:51            11ÿ358 license.txt
+23.05.2026  17:29             2ÿ091 pliki
+23.05.2026  17:29                 0 pliki_ekran.txt
+25.02.2025  17:51             3ÿ753 README.md
+10.05.2026  19:14    <DIR>          test_apps
+               9 File(s)         38ÿ163 bytes
+
+ Directory of h:\!_esp32p4_wifi\JC8012P4A1C_I_W_Y\1-Demo\idf-examples\common_components\esp_lcd_jd9365\include
+
+10.05.2026  19:14    <DIR>          .
+23.05.2026  17:29    <DIR>          ..
+03.04.2025  16:24             5ÿ923 esp_lcd_jd9365.h
+               1 File(s)          5ÿ923 bytes
+
+ Directory of h:\!_esp32p4_wifi\JC8012P4A1C_I_W_Y\1-Demo\idf-examples\common_components\esp_lcd_jd9365\test_apps
+
+10.05.2026  19:14    <DIR>          .
+23.05.2026  17:29    <DIR>          ..
+25.02.2025  17:51               316 CMakeLists.txt
+10.05.2026  19:14    <DIR>          main
+25.02.2025  17:51                93 sdkconfig.defaults
+25.02.2025  17:51               114 sdkconfig.defaults.esp32p4
+               3 File(s)            523 bytes
+
+ Directory of h:\!_esp32p4_wifi\JC8012P4A1C_I_W_Y\1-Demo\idf-examples\common_components\esp_lcd_jd9365\test_apps\main
+
+10.05.2026  19:14    <DIR>          .
+10.05.2026  19:14    <DIR>          ..
+25.02.2025  17:51                53 CMakeLists.txt
+25.02.2025  17:51               124 idf_component.yml
+25.02.2025  17:51             9ÿ195 test_esp_lcd_jd9365.c
+               3 File(s)          9ÿ372 bytes
+
+     Total Files Listed:
+              16 File(s)         53ÿ981 bytes
+              11 Dir(s)  349ÿ017ÿ104ÿ384 bytes free
