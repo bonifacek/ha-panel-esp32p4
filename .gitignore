@@ -11,6 +11,9 @@ aplikacja/__pycache__/
 **/__pycache__/
 *.pyc
 
+# Sensitive files — credentials, tokens
+aplikacja/ustawienia.json
+
 # IDE files
 .vscode/
 .idea/
