@@ -42,10 +42,12 @@ static constexpr time_t kTrendStableSec = 30 * 60;  // 30 minut bez zmiany → s
 enum class TrendDir : uint8_t { None, Up, Down, Stable };
 
 // Switch state colors
-static constexpr uint32_t kColorSwitchOnBg   = 0x0D3A30;
-static constexpr uint32_t kColorSwitchOffBg  = 0x2A1010;
-static constexpr uint32_t kColorSwitchOnBtn  = 0x0A5040;
-static constexpr uint32_t kColorSwitchOffBtn = 0x1E2A35;
+static constexpr uint32_t kColorSwitchOnBg      = 0x0D3A30;
+static constexpr uint32_t kColorSwitchOffBg     = 0x2A1010;
+static constexpr uint32_t kColorSwitchOnBtn     = 0x0C4838;  // ciemna zieleń: włączony
+static constexpr uint32_t kColorSwitchOffBtn    = 0x1E2A35;  // ciemny niebieski: wyłączony
+static constexpr uint32_t kColorSwitchOnPress   = 0x186550;  // jaśniejsza zieleń: przyciśnięty
+static constexpr uint32_t kColorSwitchOffPress  = 0x2A3A48;  // jaśniejszy niebieski: przyciśnięty
 
 // ---------------------------------------------------------------------------
 // Globalne wskazniki LVGL
@@ -63,6 +65,8 @@ static lv_obj_t *s_row_labels[kHaMaxScreens][kHaMaxTiles][kHaMaxRows];
 static lv_obj_t *s_tile_cards[kHaMaxScreens][kHaMaxTiles];
 // Przyciski switch: [screen][tile][row]
 static lv_obj_t *s_switch_btns[kHaMaxScreens][kHaMaxTiles][kHaMaxRows];
+// Kółko stanu (lewy wskaźnik w przycisku): [screen][tile][row]
+static lv_obj_t *s_switch_circles[kHaMaxScreens][kHaMaxTiles][kHaMaxRows];
 // Stany przelacznikow: [screen][tile][row]
 static bool      s_switch_states[kHaMaxScreens][kHaMaxTiles][kHaMaxRows];
 // Ikony kolorowe (osobny label): [screen][tile][row]
@@ -661,22 +665,45 @@ static void make_tile_card(lv_obj_t *parent,
             lv_obj_t *btn = lv_btn_create(card);
             s_switch_btns[screen_idx][tile_idx][r] = btn;
 
-            lv_obj_set_size(btn, 140, 42);
-            lv_obj_set_style_radius(btn, 10, 0);
+            // Pełna szerokość, wyższy (pill toggle)
+            lv_obj_set_size(btn, LV_PCT(100), 52);
+            lv_obj_set_style_radius(btn, 12, 0);
             lv_obj_set_style_bg_color(btn, lv_color_hex(kColorSwitchOffBtn), 0);
-            lv_obj_set_style_bg_color(btn, lv_color_hex(0x2F778B), LV_STATE_PRESSED);
+            lv_obj_set_style_bg_color(btn, lv_color_hex(kColorSwitchOffPress), LV_STATE_PRESSED);
             lv_obj_set_style_shadow_width(btn, 0, 0);
+            lv_obj_set_style_pad_hor(btn, 14, 0);
+            lv_obj_set_style_pad_ver(btn, 0, 0);
+            // Flex row: kółko + tekst
+            lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_START,
+                                  LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            lv_obj_set_style_pad_column(btn, 12, 0);
+
+            // Kółko wskaźnika stanu (szare = brak danych)
+            lv_obj_t *circle = lv_obj_create(btn);
+            s_switch_circles[screen_idx][tile_idx][r] = circle;
+            lv_obj_remove_style_all(circle);
+            lv_obj_set_size(circle, 16, 16);
+            lv_obj_set_style_radius(circle, LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_bg_color(circle, lv_color_hex(0x3A5060), 0);
+            lv_obj_set_style_bg_opa(circle, LV_OPA_COVER, 0);
+            lv_obj_clear_flag(circle, LV_OBJ_FLAG_CLICKABLE);
+
+            // Etykieta stanu
+            lv_obj_t *btn_lbl = lv_label_create(btn);
+            lv_label_set_text(btn_lbl, "-- brak danych --");
+            lv_obj_set_style_text_font(btn_lbl, &lv_font_polish_18, 0);
+            lv_obj_set_style_text_color(btn_lbl, lv_color_hex(kColorMuted), 0);
+            lv_obj_set_flex_grow(btn_lbl, 1);
+            lv_obj_set_style_text_align(btn_lbl, LV_TEXT_ALIGN_CENTER, 0);
+            lv_label_set_long_mode(btn_lbl, LV_LABEL_LONG_DOT);
+            lv_obj_clear_flag(btn_lbl, LV_OBJ_FLAG_CLICKABLE);
 
             const uint32_t packed = ((uint32_t)screen_idx << 8)
                                   | ((uint32_t)tile_idx   << 4)
                                   | (uint32_t)r;
             lv_obj_add_event_cb(btn, switch_event_cb, LV_EVENT_CLICKED,
                                 (void *)(uintptr_t)packed);
-
-            lv_obj_t *btn_lbl = lv_label_create(btn);
-            lv_label_set_text(btn_lbl, "Przelacz");
-            lv_obj_set_style_text_font(btn_lbl, &lv_font_polish_18, 0);
-            lv_obj_center(btn_lbl);
         }
     }
 }
@@ -736,6 +763,7 @@ void panel_ui_create(UiCommandCallback command_callback)
     memset(s_row_labels,     0, sizeof(s_row_labels));
     memset(s_tile_cards,     0, sizeof(s_tile_cards));
     memset(s_switch_btns,    0, sizeof(s_switch_btns));
+    memset(s_switch_circles, 0, sizeof(s_switch_circles));
     memset(s_switch_states,  0, sizeof(s_switch_states));
     memset(s_icon_labels,    0, sizeof(s_icon_labels));
     memset(s_trend_labels,   0, sizeof(s_trend_labels));
@@ -833,14 +861,29 @@ void panel_ui_update_row(size_t screen_idx, size_t tile_idx,
         // Zmien kolor etykiety na wskaznik stanu ON/OFF + blask
         switch_label_flash(lbl, is_on);
 
-        // Przycisk: kolor i etykieta informuja o dostepnej akcji
+        // Przycisk: aktualizuj kolor tla, kółko wskaźnika i tekst stanu
         lv_obj_t *btn = s_switch_btns[screen_idx][tile_idx][row_idx];
         if (btn) {
             lv_obj_set_style_bg_color(btn,
                 lv_color_hex(is_on ? kColorSwitchOnBtn : kColorSwitchOffBtn), 0);
-            lv_obj_t *btn_lbl = lv_obj_get_child(btn, 0);
-            if (btn_lbl)
-                lv_label_set_text(btn_lbl, is_on ? "Wylacz" : "Wlacz");
+            lv_obj_set_style_bg_color(btn,
+                lv_color_hex(is_on ? kColorSwitchOnPress : kColorSwitchOffPress),
+                LV_STATE_PRESSED);
+
+            // Kółko wskaźnika: zielone = ON, czerwone = OFF
+            lv_obj_t *circle = s_switch_circles[screen_idx][tile_idx][row_idx];
+            if (circle) {
+                lv_obj_set_style_bg_color(circle,
+                    lv_color_hex(is_on ? 0x4CD97B : 0xF07863), 0);
+            }
+
+            // Etykieta: WLACZONY / WYLACZONY (child[1] = po kółku)
+            lv_obj_t *btn_lbl = lv_obj_get_child(btn, 1);
+            if (btn_lbl) {
+                lv_label_set_text(btn_lbl, is_on ? "WLACZONY" : "WYLACZONY");
+                lv_obj_set_style_text_color(btn_lbl,
+                    lv_color_hex(is_on ? 0x4CD97B : 0xF07863), 0);
+            }
         }
     } else {
         // Sensor: krotki blask teal na etykiecie

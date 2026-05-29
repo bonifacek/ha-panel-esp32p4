@@ -85,22 +85,28 @@ static void parse_row(cJSON *obj, HaRow *row)
     get_str("unit",      row->unit,      sizeof(row->unit));
 
     // Typ sensora — opcjonalne pole "sensor_type" w JSON
+    // Specjalna wartość "switch" wymusza EntityKind::Switch niezależnie od domeny
     cJSON *st_item = cJSON_GetObjectItemCaseSensitive(obj, "sensor_type");
+    bool forced_switch = false;
     if (cJSON_IsString(st_item) && st_item->valuestring) {
         const char *s = st_item->valuestring;
-        if      (strcmp(s, "temperature") == 0)  row->sensor_type = SensorType::Temperature;
-        else if (strcmp(s, "humidity")    == 0)  row->sensor_type = SensorType::Humidity;
-        else if (strcmp(s, "cpu")         == 0)  row->sensor_type = SensorType::Cpu;
-        else if (strcmp(s, "memory")      == 0)  row->sensor_type = SensorType::Memory;
-        else if (strcmp(s, "power")       == 0)  row->sensor_type = SensorType::Power;
-        else if (strcmp(s, "illuminance") == 0)  row->sensor_type = SensorType::Illuminance;
-        else                                      row->sensor_type = SensorType::Generic;
+        if      (strcmp(s, "switch")      == 0) { forced_switch = true;
+                                                   row->sensor_type = SensorType::Generic; }
+        else if (strcmp(s, "temperature") == 0)   row->sensor_type = SensorType::Temperature;
+        else if (strcmp(s, "humidity")    == 0)   row->sensor_type = SensorType::Humidity;
+        else if (strcmp(s, "cpu")         == 0)   row->sensor_type = SensorType::Cpu;
+        else if (strcmp(s, "memory")      == 0)   row->sensor_type = SensorType::Memory;
+        else if (strcmp(s, "power")       == 0)   row->sensor_type = SensorType::Power;
+        else if (strcmp(s, "illuminance") == 0)   row->sensor_type = SensorType::Illuminance;
+        else                                       row->sensor_type = SensorType::Generic;
     } else {
         row->sensor_type = SensorType::Generic;
     }
 
     extract_domain(row->entity_id, row->domain, sizeof(row->domain));
-    row->kind = is_switch_domain(row->domain) ? EntityKind::Switch : EntityKind::Sensor;
+    // sensor_type:"switch" nadpisuje wykrywanie na podstawie domeny
+    row->kind = (forced_switch || is_switch_domain(row->domain))
+                ? EntityKind::Switch : EntityKind::Sensor;
 
     if (row->label[0] == '\0')
         strlcpy(row->label, row->entity_id, sizeof(row->label));

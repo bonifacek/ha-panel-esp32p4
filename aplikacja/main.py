@@ -842,6 +842,9 @@ class MainWindow(QMainWindow):
         """Wywoływane przez TileWidget po zmianie rozmiaru."""
         pass  # dane zaktualizowane bezpośrednio
 
+    # Domeny HA traktowane automatycznie jako przekaźniki (muszą pasować do is_switch_domain w ha_entities.cpp)
+    _SWITCH_DOMAINS = {"switch", "light", "fan", "input_boolean", "automation"}
+
     def _add_entity_to_tile(self, tile_idx: int, entity: dict):
         tile = self._get_tile(tile_idx)
         if tile is None:
@@ -851,12 +854,16 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Limit wierszy",
                 f"Kafelek może mieć maksymalnie {MAX_ROWS} wierszy.")
             return
+        # Auto-wykryj przekaźnik na podstawie domeny encji
+        eid = entity["entity_id"]
+        domain = eid.split(".")[0] if "." in eid else ""
+        auto_type = "switch" if domain in self._SWITCH_DOMAINS else "generic"
         rows.append({
-            "entity_id":   entity["entity_id"],
-            "label":       entity.get("label", entity["entity_id"]),
+            "entity_id":   eid,
+            "label":       entity.get("label", eid),
             "attribute":   "",
             "unit":        "",
-            "sensor_type": "generic",
+            "sensor_type": auto_type,
         })
         if tile_idx < len(self._tile_widgets):
             self._tile_widgets[tile_idx].update_data(tile)
@@ -1022,7 +1029,7 @@ class MainWindow(QMainWindow):
         flay.setContentsMargins(8, 6, 8, 6)
         flay.setSpacing(4)
 
-        # entity_id + przycisk usuń
+        # ── entity_id + przycisk usuń ─────────────────────────────────────────
         top = QHBoxLayout()
         lbl_eid = QLabel(row.get("entity_id", ""))
         lbl_eid.setStyleSheet(
@@ -1036,14 +1043,41 @@ class MainWindow(QMainWindow):
         top.addWidget(btn_del)
         flay.addLayout(top)
 
-        # Etykieta
+        # ── Typ encji: Sensor / Przekaźnik ───────────────────────────────────
+        is_relay = (row.get("sensor_type") == "switch")
+
+        type_row = QWidget()
+        type_row_lay = QHBoxLayout(type_row)
+        type_row_lay.setContentsMargins(0, 0, 0, 0)
+        type_row_lay.setSpacing(8)
+
+        radio_sensor = QRadioButton("📊  Sensor")
+        radio_relay  = QRadioButton("🔌  Przekaźnik")
+        radio_sensor.setChecked(not is_relay)
+        radio_relay.setChecked(is_relay)
+
+        entity_type_grp = QButtonGroup(type_row)
+        entity_type_grp.addButton(radio_sensor, 0)
+        entity_type_grp.addButton(radio_relay,  1)
+
+        type_row_lay.addWidget(radio_sensor)
+        type_row_lay.addWidget(radio_relay)
+        type_row_lay.addStretch()
+        flay.addWidget(type_row)
+
+        # ── Etykieta (zawsze widoczna) ────────────────────────────────────────
         lbl_edit = QLineEdit(row.get("label", ""))
         lbl_edit.setPlaceholderText("Etykieta (wyświetlana na ekranie)")
         lbl_edit.textChanged.connect(
             lambda text, r=row_idx: self._on_row_changed(r, "label", text))
         flay.addWidget(lbl_edit)
 
-        # Jednostka
+        # ── Kontrolki sensora (ukrywane gdy przekaźnik) ───────────────────────
+        sensor_box = QWidget()
+        sensor_lay = QVBoxLayout(sensor_box)
+        sensor_lay.setContentsMargins(0, 0, 0, 0)
+        sensor_lay.setSpacing(4)
+
         unit_lay = QHBoxLayout()
         unit_lay.addWidget(QLabel("Jednostka:"))
         unit_edit = QLineEdit(row.get("unit", ""))
@@ -1053,9 +1087,8 @@ class MainWindow(QMainWindow):
             lambda text, r=row_idx: self._on_row_changed(r, "unit", text))
         unit_lay.addWidget(unit_edit)
         unit_lay.addStretch()
-        flay.addLayout(unit_lay)
+        sensor_lay.addLayout(unit_lay)
 
-        # Atrybut HA
         attr_lay = QHBoxLayout()
         attr_lay.addWidget(QLabel("Atrybut HA:"))
         attr_edit = QLineEdit(row.get("attribute", ""))
@@ -1066,9 +1099,8 @@ class MainWindow(QMainWindow):
         attr_edit.textChanged.connect(
             lambda text, r=row_idx: self._on_row_changed(r, "attribute", text))
         attr_lay.addWidget(attr_edit)
-        flay.addLayout(attr_lay)
+        sensor_lay.addLayout(attr_lay)
 
-        # Typ sensora
         _SENSOR_TYPES = [
             ("generic",     "Ogólny (brak ikony)"),
             ("temperature", "Temperatura 🌡  (termometr, kolory dynamiczne)"),
@@ -1078,12 +1110,14 @@ class MainWindow(QMainWindow):
             ("power",       "Moc / Energia ⚡  (błyskawica)"),
             ("illuminance", "Oświetlenie 💡  (żarówka)"),
         ]
-        type_lay = QHBoxLayout()
-        type_lay.addWidget(QLabel("Typ sensora:"))
+        stype_lay = QHBoxLayout()
+        stype_lay.addWidget(QLabel("Typ sensora:"))
         type_combo = QComboBox()
         for key, lbl in _SENSOR_TYPES:
             type_combo.addItem(lbl, key)
         current_type = row.get("sensor_type", "generic")
+        if current_type == "switch":
+            current_type = "generic"
         for i in range(type_combo.count()):
             if type_combo.itemData(i) == current_type:
                 type_combo.setCurrentIndex(i)
@@ -1091,8 +1125,69 @@ class MainWindow(QMainWindow):
         type_combo.currentIndexChanged.connect(
             lambda idx, combo=type_combo, r=row_idx:
                 self._on_row_changed(r, "sensor_type", combo.itemData(idx)))
-        type_lay.addWidget(type_combo)
-        flay.addLayout(type_lay)
+        stype_lay.addWidget(type_combo)
+        sensor_lay.addLayout(stype_lay)
+
+        flay.addWidget(sensor_box)
+
+        # ── Podgląd przycisku przekaźnika (widoczny gdy przekaźnik) ──────────
+        relay_box = QFrame()
+        relay_box.setObjectName("relay_preview")
+        relay_box.setStyleSheet("""
+            #relay_preview {
+                background: #1E2A35;
+                border-radius: 10px;
+                border: 1px solid #2A3A4A;
+                min-height: 52px;
+                max-height: 52px;
+            }
+        """)
+        rb_lay = QHBoxLayout(relay_box)
+        rb_lay.setContentsMargins(12, 4, 12, 4)
+        rb_lay.setSpacing(10)
+
+        circle_lbl = QLabel("●")
+        circle_lbl.setStyleSheet(
+            "font-size: 18px; color: #3A5060; background: transparent; "
+            "border: none;")
+        circle_lbl.setFixedWidth(22)
+
+        btn_text_lbl = QLabel("— brak danych —")
+        btn_text_lbl.setStyleSheet(
+            "color: #607080; font-size: 12px; background: transparent; "
+            "border: none;")
+        btn_text_lbl.setAlignment(Qt.AlignCenter)
+
+        rb_lay.addWidget(circle_lbl)
+        rb_lay.addWidget(btn_text_lbl, 1)
+
+        note_lbl = QLabel("Kliknięcie na ESP32 przełączy stan")
+        note_lbl.setStyleSheet("color: #405060; font-size: 9px;")
+        note_lbl.setAlignment(Qt.AlignCenter)
+
+        relay_container = QWidget()
+        rc_lay = QVBoxLayout(relay_container)
+        rc_lay.setContentsMargins(0, 0, 0, 0)
+        rc_lay.setSpacing(2)
+        rc_lay.addWidget(relay_box)
+        rc_lay.addWidget(note_lbl)
+
+        flay.addWidget(relay_container)
+
+        # Ustaw widoczność na starcie
+        sensor_box.setVisible(not is_relay)
+        relay_container.setVisible(is_relay)
+
+        # ── Reagowanie na zmianę typu ─────────────────────────────────────────
+        def _on_entity_type_changed(btn_id: int):
+            sw = (btn_id == 1)
+            sensor_box.setVisible(not sw)
+            relay_container.setVisible(sw)
+            self._on_row_changed(
+                row_idx, "sensor_type",
+                "switch" if sw else type_combo.itemData(type_combo.currentIndex()))
+
+        entity_type_grp.idClicked.connect(_on_entity_type_changed)
 
         self.rows_layout.insertWidget(self.rows_layout.count() - 1, frame)
 
