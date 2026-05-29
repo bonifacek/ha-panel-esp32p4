@@ -162,8 +162,11 @@ class TileWidget(QFrame):
         self._lay.addWidget(sep)
 
         for row in self.tile_data.get("rows", []):
-            rl = QLabel("• " + (row.get("label") or row.get("entity_id", "")))
-            rl.setStyleSheet("color:#9ab8c8; font-size:10px;")
+            is_relay = row.get("sensor_type") == "switch"
+            prefix = "🔌" if is_relay else "•"
+            color  = "#f0a060" if is_relay else "#9ab8c8"
+            rl = QLabel(f"{prefix} " + (row.get("label") or row.get("entity_id", "")))
+            rl.setStyleSheet(f"color:{color}; font-size:10px;")
             rl.setWordWrap(False)
             self._lay.addWidget(rl)
 
