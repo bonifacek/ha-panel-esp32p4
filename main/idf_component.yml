@@ -18,3 +18,17 @@ dependencies:
 
   esp-wifi-connect:
     path: ../components/esp-wifi-connect
+
+  # Kamera SC2336 + detekcja twarzy (budzenie ekranu)
+  espressif/esp_sccb_intf:
+    version: ">=0.0.2"
+  espressif/esp-dl:
+    version: "3.1.0"
+  espressif/esp_h264:
+    version: ">=1.0.3"
+  esp_video:
+    path: ../common_components/esp_video
+  esp_cam_sensor:
+    path: ../common_components/esp_cam_sensor
+  human_face_detect:
+    path: ../common_components/human_face_detect

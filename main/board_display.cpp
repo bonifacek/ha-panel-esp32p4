@@ -171,3 +171,13 @@ void board_display_unlock(void)
 {
     bsp_display_unlock();
 }
+
+void board_display_notify_activity(void)
+{
+    s_last_touch_us = esp_timer_get_time();
+    if (s_backlight_off) {
+        bsp_display_backlight_on();
+        s_backlight_off = false;
+        ESP_LOGI(TAG, "Backlight woke up by camera");
+    }
+}

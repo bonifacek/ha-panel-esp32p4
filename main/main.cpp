@@ -3,6 +3,7 @@
 #include "ha_entities.h"
 #include "battery_monitor.h"
 #include "board_display.h"
+#include "camera_wake.h"
 #include "panel_ui.h"
 #include "web_config.h"
 #include "esp_hosted_ota.h"
@@ -208,6 +209,9 @@ extern "C" void app_main(void)
     board_display_lock();
     panel_ui_create(handle_command);
     board_display_unlock();
+
+    // Kamera → detekcja twarzy → budzenie ekranu (nieśmiertelna inicjalizacja)
+    camera_wake_init();
 
     xTaskCreatePinnedToCore(battery_task, "battery_task", 8192,  nullptr, 4, nullptr, 0);
     xTaskCreatePinnedToCore(network_task, "network_task", 8192,  nullptr, 5, nullptr, 0);

@@ -8,6 +8,7 @@ idf_component_register(
         "board_display.cpp"
         "panel_ui.cpp"
         "web_config.cpp"
+        "camera_wake.cpp"
         "fonts/lv_font_polish_18.c"
         "fonts/lv_font_polish_20.c"
         "fonts/lv_font_polish_22.c"
@@ -34,4 +35,7 @@ idf_component_register(
         "esp_wifi_remote"
         "esp32_p4_function_ev_board"
         "esp_hosted"
+        "esp_video"
+        "esp_cam_sensor"
+        "human_face_detect"
 )
