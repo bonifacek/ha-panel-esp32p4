@@ -28,9 +28,9 @@ MAX_SCREENS = 8
 MAX_TILES   = 12
 MAX_ROWS    = 6
 
-# Obszar roboczy ESP w pikselach (1024×600 minus statusbar 64px i tabbar 44px)
-ESP_W = 1024
-ESP_H = 492
+# Obszar roboczy ESP w pikselach (1280×800 minus statusbar 64px i tabbar 44px)
+ESP_W = 1280
+ESP_H = 692
 
 # Siatka przyciągania przy przeciąganiu (ESP piksele)
 SNAP = 16
@@ -60,6 +60,42 @@ class _LoadEntitiesThread(QThread):
             self.error.emit(str(e))
 
 
+# ─── Wątek wysyłania/pobierania dashboardu z panelu ──────────────────────────
+class _PanelThread(QThread):
+    """GET lub POST /api/dashboard na ESP32-P4."""
+    done  = Signal(dict)   # GET: odebrany JSON
+    ok    = Signal(str)    # POST: komunikat sukcesu
+    error = Signal(str)
+
+    def __init__(self, ip: str, payload: dict | None = None):
+        super().__init__()
+        self.ip      = ip.strip().rstrip("/")
+        self.payload = payload   # None = GET, dict = POST
+
+    def run(self):
+        import urllib.request, urllib.error
+        url = f"http://{self.ip}/api/dashboard"
+        try:
+            if self.payload is None:
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req, timeout=8) as r:
+                    data = json.loads(r.read().decode())
+                self.done.emit(data)
+            else:
+                body = json.dumps(self.payload, ensure_ascii=False).encode()
+                req  = urllib.request.Request(
+                    url, data=body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=8) as r:
+                    self.ok.emit(r.read().decode())
+        except urllib.error.URLError as e:
+            self.error.emit(str(e.reason))
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 # ─── Lista encji z niestandardowym drag MIME ──────────────────────────────────
 class EntityListWidget(QListWidget):
     """QListWidget pakujący dane encji do MIME przy przeciąganiu."""
@@ -85,16 +121,17 @@ class TileWidget(QFrame):
       • przeciąganie (przesuwanie — cała powierzchnia kafelka)
       • zmianę rozmiaru (uchwyt ▪ w prawym dolnym rogu)
       • drag-and-drop encji z listy
-    Współrzędne tile_data["x/y/w/h"] są w pikselach ESP (0–1024 × 0–492).
+    Współrzędne tile_data["x/y/w/h"] są w pikselach ESP (0–1280 × 0–692).
     """
     HANDLE = 14  # rozmiar uchwytu resize [px canvas]
 
     def __init__(self, tile_data: dict, tile_idx: int,
-                 get_scale,      # callable() → float
-                 on_click,       # callback(tile_idx)
-                 on_drop,        # callback(tile_idx, entity_dict)
-                 on_move,        # callback(tile_idx, esp_x, esp_y)
-                 on_resize,      # callback(tile_idx, esp_w, esp_h)
+                 get_scale,           # callable() → float
+                 on_click,            # callback(tile_idx)
+                 on_drop,             # callback(tile_idx, entity_dict)
+                 on_move,             # callback(tile_idx, esp_x, esp_y)
+                 on_resize,           # callback(tile_idx, esp_w, esp_h)
+                 get_state=None,      # callable(entity_id) → str|None
                  parent=None):
         super().__init__(parent)
         self.tile_data  = tile_data
@@ -104,6 +141,7 @@ class TileWidget(QFrame):
         self._on_drop   = on_drop
         self._on_move   = on_move
         self._on_resize = on_resize
+        self._get_state = get_state
         self._selected  = False
 
         self._drag_mode  = None        # None | 'move' | 'resize'
@@ -132,6 +170,92 @@ class TileWidget(QFrame):
                     max(MIN_TILE_H, int(self.tile_data.get("h", DEFAULT_TILE_H) * sc)))
 
     # ── wygląd ────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _sensor_icon_color(sensor_type: str, state: str | None) -> tuple[str, str]:
+        """Zwraca (ikona, kolor_hex) pasujące do wyglądu firmware."""
+        if sensor_type == "temperature":
+            icon = "🌡"
+            try:
+                v = float(state) if state else None
+            except ValueError:
+                v = None
+            if v is None:     color = "#607080"
+            elif v > 28:      color = "#e06050"
+            elif v > 24:      color = "#e0a050"
+            elif v > 18:      color = "#50c8a0"
+            else:             color = "#6090e0"
+            return icon, color
+        elif sensor_type == "humidity":
+            return "💧", "#6090e0"
+        elif sensor_type == "power":
+            return "⚡", "#e0c050"
+        elif sensor_type in ("cpu", "memory"):
+            icon = "🖥" if sensor_type == "cpu" else "💾"
+            try:
+                v = float(state) if state else None
+            except ValueError:
+                v = None
+            if v is None:    color = "#607080"
+            elif v > 80:     color = "#e06050"
+            elif v > 50:     color = "#e0a050"
+            else:            color = "#50c880"
+            return icon, color
+        elif sensor_type == "illuminance":
+            return "💡", "#e0e080"
+        else:
+            return "•", "#9ab8c8"
+
+    def _build_row_widget(self, row: dict) -> QWidget:
+        """Tworzy widget pojedynczego wiersza encji — z prawdziwym stanem."""
+        is_switch = row.get("sensor_type") == "switch"
+        eid   = row.get("entity_id", "")
+        label = row.get("label") or eid
+        unit  = row.get("unit", "")
+        state = self._get_state(eid) if self._get_state else None
+
+        w = QWidget()
+        w.setStyleSheet("background:transparent;")
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(0, 1, 0, 1)
+        lay.setSpacing(4)
+
+        if is_switch:
+            is_on = (state in ("on", "true", "1", "home", "playing", "open")
+                     if state is not None else None)
+            btn = QFrame()
+            btn.setFixedHeight(26)
+            if is_on is None:
+                bg, fg, txt = "#1a2a38", "#405060", f"⬤  {label}  —"
+            elif is_on:
+                bg, fg, txt = "#0C4838", "#2ddf99", f"⬤  {label}  WŁĄCZONY"
+            else:
+                bg, fg, txt = "#1E2A35", "#e06060", f"⬤  {label}  WYŁĄCZONY"
+            btn.setStyleSheet(
+                f"background:{bg}; border-radius:6px; border:none;")
+            btn_lay = QHBoxLayout(btn)
+            btn_lay.setContentsMargins(8, 0, 8, 0)
+            lbl = QLabel(txt)
+            lbl.setStyleSheet(
+                f"color:{fg}; font-size:10px; font-weight:bold;")
+            btn_lay.addWidget(lbl)
+            lay.addWidget(btn, stretch=1)
+        else:
+            icon, color = self._sensor_icon_color(
+                row.get("sensor_type", "generic"), state)
+            if state is not None:
+                value_str = f"{state}{' ' + unit if unit else ''}"
+                text = f"{icon} {label}:  {value_str}"
+            else:
+                text = f"{icon} {label}:  —"
+            lbl = QLabel(text)
+            lbl.setStyleSheet(f"color:{color}; font-size:10px;")
+            lbl.setWordWrap(False)
+            lay.addWidget(lbl)
+            lay.addStretch()
+
+        return w
+
     def _rebuild(self):
         while self._lay.count():
             item = self._lay.takeAt(0)
@@ -146,32 +270,45 @@ class TileWidget(QFrame):
             QLabel {{ background:transparent; }}
         """)
 
-        name_lbl = QLabel(self.tile_data.get("label") or "—")
-        name_lbl.setStyleSheet("color:#7ecfc5; font-size:12px; font-weight:bold;")
-        name_lbl.setWordWrap(False)
-        self._lay.addWidget(name_lbl)
-
+        rows        = self.tile_data.get("rows", [])
         layout_mode = self.tile_data.get("layout", "vertical")
-        layout_hint = QLabel("↕ Pionowy" if layout_mode == "vertical" else "↔ Poziomy")
-        layout_hint.setStyleSheet("color:#405060; font-size:9px;")
-        self._lay.addWidget(layout_hint)
 
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("background:#2a4050; border:none; max-height:1px;")
-        self._lay.addWidget(sep)
+        name_lbl = QLabel(self.tile_data.get("label") or "—")
+        name_lbl.setStyleSheet(
+            "color:#7ecfc5; font-size:12px; font-weight:bold;")
+        name_lbl.setWordWrap(False)
 
-        for row in self.tile_data.get("rows", []):
-            is_relay = row.get("sensor_type") == "switch"
-            prefix = "🔌" if is_relay else "•"
-            color  = "#f0a060" if is_relay else "#9ab8c8"
-            rl = QLabel(f"{prefix} " + (row.get("label") or row.get("entity_id", "")))
-            rl.setStyleSheet(f"color:{color}; font-size:10px;")
-            rl.setWordWrap(False)
-            self._lay.addWidget(rl)
+        if layout_mode == "horizontal" and rows:
+            outer = QHBoxLayout()
+            outer.setContentsMargins(0, 0, 0, 0)
+            outer.setSpacing(8)
+            outer.addWidget(name_lbl)
+
+            sep = QFrame()
+            sep.setFrameShape(QFrame.VLine)
+            sep.setStyleSheet("background:#2a4050; border:none; min-width:1px; max-width:1px;")
+            outer.addWidget(sep)
+
+            rows_col = QVBoxLayout()
+            rows_col.setSpacing(2)
+            rows_col.setContentsMargins(0, 0, 0, 0)
+            for row in rows:
+                rows_col.addWidget(self._build_row_widget(row))
+            rows_col.addStretch()
+            outer.addLayout(rows_col)
+            outer.addStretch()
+            self._lay.addLayout(outer)
+        else:
+            self._lay.addWidget(name_lbl)
+            sep = QFrame()
+            sep.setFrameShape(QFrame.HLine)
+            sep.setStyleSheet("background:#2a4050; border:none; max-height:1px;")
+            self._lay.addWidget(sep)
+            for row in rows:
+                self._lay.addWidget(self._build_row_widget(row))
 
         self._lay.addStretch()
-        if not self.tile_data.get("rows"):
+        if not rows:
             hint = QLabel("↓ upuść encję tutaj")
             hint.setStyleSheet("color:#2a4a5a; font-size:9px;")
             hint.setAlignment(Qt.AlignCenter)
@@ -341,12 +478,19 @@ class MainWindow(QMainWindow):
         self.config = AppConfig()
         self.ha_client: HaClient | None = None
         self.entities: list[dict] = []
+        self.entity_states: dict[str, str] = {}   # entity_id → bieżący stan
         self._load_thread: _LoadEntitiesThread | None = None
+        self._refresh_thread: _LoadEntitiesThread | None = None
 
         self.dashboard: dict = {"default_screen": 0, "screens": []}
         self.current_screen: int = 0
         self.selected_tile: int  = -1
         self._tile_widgets: list[TileWidget] = []
+
+        from PySide6.QtCore import QTimer
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.timeout.connect(self._auto_refresh_states)
+        self._refresh_timer.start(30_000)  # co 30s odśwież stany
 
         # Referencje do widgetów właściwości układu kafelka
         self._layout_group: QButtonGroup | None = None
@@ -408,11 +552,21 @@ class MainWindow(QMainWindow):
         btn_export = QPushButton("💾  Exportuj JSON")
         btn_export.clicked.connect(self._export_json)
 
+        btn_send = QPushButton("📡  Wyślij na panel")
+        btn_send.setObjectName("btn_primary")
+        btn_send.setToolTip("Wyślij dashboard do ESP32-P4 (POST /api/dashboard)")
+        btn_send.clicked.connect(self._send_to_panel)
+
+        btn_fetch = QPushButton("⬇  Pobierz z panelu")
+        btn_fetch.setToolTip("Pobierz dashboard z ESP32-P4 (GET /api/dashboard)")
+        btn_fetch.clicked.connect(self._fetch_from_panel)
+
         self.btn_connect = QPushButton("⚡  Połącz z HA")
         self.btn_connect.setObjectName("btn_primary")
         self.btn_connect.clicked.connect(self._show_connect_dialog)
 
-        for w in [self.lbl_status, btn_import, btn_export, self.btn_connect]:
+        for w in [self.lbl_status, btn_import, btn_export,
+                  btn_send, btn_fetch, self.btn_connect]:
             lay.addWidget(w)
 
         return bar
@@ -447,6 +601,11 @@ class MainWindow(QMainWindow):
         btn_load = QPushButton("🔄  Pobierz encje z HA")
         btn_load.clicked.connect(self._load_entities)
         lay.addWidget(btn_load)
+
+        btn_refresh = QPushButton("⟳  Odśwież stany")
+        btn_refresh.setToolTip("Pobierz aktualne wartości encji i odśwież podgląd kafelków")
+        btn_refresh.clicked.connect(self._load_entities)
+        lay.addWidget(btn_refresh)
 
         self.lbl_entity_count = QLabel("")
         self.lbl_entity_count.setStyleSheet("font-size: 10px; color: #607080;")
@@ -706,6 +865,24 @@ class MainWindow(QMainWindow):
     # Panel encji
     # ══════════════════════════════════════════════════════════════════════════
 
+    def _get_entity_state(self, entity_id: str) -> str | None:
+        return self.entity_states.get(entity_id)
+
+    def _auto_refresh_states(self):
+        """Co 30s cicho odświeża stany encji jeśli jest połączenie."""
+        if not self.ha_client or not self.entities:
+            return
+        if self._refresh_thread and self._refresh_thread.isRunning():
+            return
+        self._refresh_thread = _LoadEntitiesThread(self.ha_client)
+        self._refresh_thread.done.connect(self._on_states_refreshed)
+        self._refresh_thread.start()
+
+    def _on_states_refreshed(self, entities: list):
+        self.entity_states = {e["entity_id"]: e["state"] for e in entities}
+        for tw in self._tile_widgets:
+            tw.update_data(tw.tile_data)
+
     def _set_status(self, text: str, ok: bool = False):
         color = "#2a9b8e" if ok else "#607080"
         self.lbl_status.setStyleSheet(f"color: {color}; font-size: 11px;")
@@ -731,6 +908,7 @@ class MainWindow(QMainWindow):
 
     def _on_entities_loaded(self, entities: list):
         self.entities = entities
+        self.entity_states = {e["entity_id"]: e["state"] for e in entities}
         self.entity_list.clear()
         for ent in entities:
             label = ent.get("label", ent["entity_id"])
@@ -740,6 +918,9 @@ class MainWindow(QMainWindow):
             self.entity_list.addItem(item)
         self._set_status(f"✓ Połączono — {len(entities)} encji", ok=True)
         self.lbl_entity_count.setText(f"Łącznie: {len(entities)}")
+        # Odśwież podgląd kafelków z nowymi stanami
+        for tw in self._tile_widgets:
+            tw.update_data(tw.tile_data)
 
     def _on_entities_error(self, msg: str):
         self._set_status("❌ Błąd połączenia z HA")
@@ -807,6 +988,7 @@ class MainWindow(QMainWindow):
                 on_drop    = self._add_entity_to_tile,
                 on_move    = self._on_tile_move,
                 on_resize  = self._on_tile_resize,
+                get_state  = self._get_entity_state,
                 parent     = self.canvas,
             )
             tw.set_selected(idx == self.selected_tile)
@@ -1247,13 +1429,18 @@ class MainWindow(QMainWindow):
         token_edit.setEchoMode(QLineEdit.Password)
         token_edit.setPlaceholderText("eyJ0eXAiOiJKV1Qi...")
 
+        ip_edit = QLineEdit(self.config.panel_ip)
+        ip_edit.setPlaceholderText("np. 192.168.1.143")
+
         fl.addRow("WebSocket URL:", url_edit)
         fl.addRow("Token dostępu:", token_edit)
+        fl.addRow("IP panelu ESP:", ip_edit)
         lay.addWidget(form)
 
         hint = QLabel(
             "URL: HA → Ustawienia → System → Sieć\n"
-            "Token: Profil użytkownika → Tokeny dostępu → Utwórz token")
+            "Token: Profil użytkownika → Tokeny dostępu → Utwórz token\n"
+            "IP panelu: adres ESP32-P4 w sieci lokalnej")
         hint.setStyleSheet("color: #607080; font-size: 11px;")
         lay.addWidget(hint)
 
@@ -1292,6 +1479,7 @@ class MainWindow(QMainWindow):
                 return
             self.config.ha_url   = url
             self.config.ha_token = token
+            self.config.panel_ip = ip_edit.text().strip()
             self.config.save()
             self.ha_client = HaClient(url, token)
             self.btn_connect.setText("⚡  Połączono")
@@ -1347,9 +1535,74 @@ class MainWindow(QMainWindow):
                 f"• {len(screens)} ekranów\n"
                 f"• {tile_count} kafelków łącznie\n\n"
                 f"Plik: {path}\n\n"
-                f"Wejdź na WebGUI ESP → Dashboard → Importuj JSON.")
+                f"Użyj 'Wyślij na panel' aby wgrać bezpośrednio na urządzenie.")
         except Exception as e:
             QMessageBox.critical(self, "Błąd eksportu", str(e))
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Komunikacja z panelem ESP32-P4
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _get_panel_ip(self) -> str | None:
+        ip = self.config.panel_ip.strip()
+        if not ip:
+            ip, ok = QInputDialog.getText(
+                self, "IP panelu", "Podaj adres IP ESP32-P4:",
+                text="192.168.1.")
+            if not ok or not ip.strip():
+                return None
+            self.config.panel_ip = ip.strip()
+            self.config.save()
+        return self.config.panel_ip
+
+    def _send_to_panel(self):
+        screens = self.dashboard.get("screens", [])
+        if not screens:
+            QMessageBox.warning(self, "Brak danych",
+                "Nie masz jeszcze żadnych ekranów do wysłania.")
+            return
+        ip = self._get_panel_ip()
+        if not ip:
+            return
+        self._set_status(f"Wysyłanie do {ip}...")
+        self._panel_thread = _PanelThread(ip, payload=self.dashboard)
+        self._panel_thread.ok.connect(self._on_panel_send_ok)
+        self._panel_thread.error.connect(self._on_panel_error)
+        self._panel_thread.start()
+
+    def _fetch_from_panel(self):
+        ip = self._get_panel_ip()
+        if not ip:
+            return
+        self._set_status(f"Pobieranie z {ip}...")
+        self._panel_thread = _PanelThread(ip, payload=None)
+        self._panel_thread.done.connect(self._on_panel_fetch_done)
+        self._panel_thread.error.connect(self._on_panel_error)
+        self._panel_thread.start()
+
+    def _on_panel_send_ok(self, msg: str):
+        self._set_status("✓ Dashboard wysłany na panel — restart w toku", ok=True)
+        QMessageBox.information(self, "Sukces", f"Dashboard wysłany.\n\n{msg}")
+
+    def _on_panel_fetch_done(self, data: dict):
+        if "screens" not in data or not isinstance(data["screens"], list):
+            QMessageBox.critical(self, "Błąd", "Otrzymano nieprawidłowy JSON.")
+            return
+        self.dashboard      = data
+        self.current_screen = 0
+        self.selected_tile  = -1
+        self._render_canvas()
+        self._clear_properties()
+        n = len(data["screens"])
+        self._set_status(f"✓ Pobrano z panelu — {n} ekranów", ok=True)
+        QMessageBox.information(self, "Pobrano z panelu",
+            f"Wczytano konfigurację z urządzenia:\n• {n} ekranów")
+
+    def _on_panel_error(self, msg: str):
+        self._set_status("❌ Błąd komunikacji z panelem")
+        QMessageBox.critical(self, "Błąd połączenia z panelem",
+            f"Nie udało się połączyć z ESP32-P4.\n\n{msg}\n\n"
+            "Sprawdź:\n• IP w ustawieniach\n• Czy panel jest w sieci\n• Czy WiFi działa")
 
 
 # ─── Start ────────────────────────────────────────────────────────────────────
