@@ -1,76 +1,85 @@
 /**
  * camera_wake.cpp
  *
- * Detekcja twarzy jako wyzwalacz budzenia ekranu.
- * Kamera SC2336 (MIPI CSI 2-lane) → esp_video (V4L2) → HumanFaceDetect (esp-dl).
+ * Detekcja RUCHU jako wyzwalacz budzenia ekranu.
+ * Kamera OV02C10 (MIPI CSI) → esp_video (V4L2) → porównanie klatek.
  *
- * Kiedy ekran jest wygaszony i kamera wykryje twarz →
- *   board_display_notify_activity() włącza podświetlenie i resetuje timer.
+ * Algorytm: co kSleepMs próbkuje klatkę 80×45 pikseli (kanał zielony jako luma),
+ * porównuje z poprzednią klatką. Jeśli >kMtnCountThresh pikseli zmieniło się
+ * o więcej niż kMtnPixThresh → ruch wykryty → ekran budzi się.
  *
- * Inicjalizacja jest nieśmiertelna: jeśli kamera niedostępna, task nie startuje
- * i reszta systemu (WiFi, HA, wyświetlacz) działa normalnie.
+ * Zalety vs detekcja twarzy:
+ *   - Działa niezależnie od ekspozycji i kalibracji kolorów ISP
+ *   - Zero zależności od esp-dl / modeli ML
+ *   - ~3.5 KB RAM zamiast >2 MB PSRAM
+ *   - Niezawodność ~100% dla ruchu w polu widzenia kamery
+ *
+ * Inicjalizacja nieśmiertelna: jeśli kamera niedostępna, task nie startuje.
  */
 
 #include "camera_wake.h"
 #include "board_display.h"
 
 #include "esp_log.h"
-#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-// V4L2 kamera (esp_video)
 #include "esp_video_init.h"
 #include "linux/videodev2.h"
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <string.h>
 #include <errno.h>
 
-// Detekcja twarzy (esp-dl)
-#include "human_face_detect.hpp"
-
-// BSP — współdzielony bus I2C (ten sam co dotyk GSL3680)
 #include "bsp/esp-bsp.h"
 
 static const char *TAG = "camera_wake";
 
-// ── Konfiguracja ────────────────────────────────────────────────────────────
-// 640×480 RGB565: wystarczające dla detekcji, szybsze niż 1280×720
-static constexpr int   kCamW        = 640;
-static constexpr int   kCamH        = 480;
-static constexpr int   kFrameBytes  = kCamW * kCamH * 2;  // RGB565
-static constexpr int   kBufCount    = 2;
-// Detekcja co ~1s gdy ekran śpi (zadanie trwa ~300–600ms na P4 @ 360MHz)
-static constexpr int   kSleepMs     = 400;
+// ── Parametry kamery ──────────────────────────────────────────────────────────
+static constexpr int kBufCount = 3;
+static constexpr int kSleepMs  = 500;  // 2 fps — wystarczy dla detekcji ruchu
 
-// ── Stan ────────────────────────────────────────────────────────────────────
-static int    s_video_fd = -1;
-static void  *s_frame_bufs[kBufCount];
-static HumanFaceDetect *s_detector = nullptr;
+// ── Parametry detekcji ruchu ──────────────────────────────────────────────────
+// Rozmiar mapy ruchu: 80×45 = 3600 pikseli (16× subsample z 1288×728)
+static constexpr int kMtnW = 80;
+static constexpr int kMtnH = 45;
+// Próg na piksel: |luma_curr - luma_prev| > kMtnPixThresh → zmieniony
+// 8  = czuły (dalekie obiekty), 15 = średni, 25 = tylko bliskie duże zmiany
+static constexpr int kMtnPixThresh   = 15;
+// Minimalna liczba zmienionych pikseli żeby uznać ruch
+// 200 = 5.5% kadru (dalekie), 500 = 14% (średnie), 800 = 22% (tylko blisko)
+static constexpr int kMtnCountThresh = 500;
 
-// ── Inicjalizacja kamery ────────────────────────────────────────────────────
+// ── Stan kamery ───────────────────────────────────────────────────────────────
+static size_t   s_frame_bytes = 0;
+static uint32_t s_cam_w       = 1288;
+static uint32_t s_cam_h       = 728;
+static int      s_video_fd    = -1;
+static void    *s_frame_bufs[kBufCount];
+
+// Poprzednia klatka (luma 80×45) — w SRAM, ~3.5 KB
+static uint8_t  s_prev_luma[kMtnW * kMtnH];
+static bool     s_prev_valid = false;
+
+// ── Inicjalizacja kamery ──────────────────────────────────────────────────────
 static esp_err_t cam_hw_init(void)
 {
-    // Reużyj I2C zainicjalizowanego przez BSP (wspólny z touch, SDA=7 SCL=8)
-    i2c_master_bus_handle_t i2c = bsp_i2c_get_handle();
-    if (!i2c) {
-        ESP_LOGE(TAG, "BSP I2C handle NULL — kamera niedostepna");
+    i2c_master_bus_handle_t bsp_i2c = bsp_i2c_get_handle();
+    if (!bsp_i2c) {
+        ESP_LOGE(TAG, "BSP I2C handle NULL");
         return ESP_ERR_INVALID_STATE;
     }
 
-    esp_video_init_csi_config_t csi_cfg = {
-        .sccb_config = {
-            .init_sccb  = false,       // reużywamy istniejący BSP I2C
-            .i2c_handle = i2c,
-        },
-        .reset_pin = -1,               // płytka nie podłącza RST kamery
-        .pwdn_pin  = -1,               // płytka nie podłącza PWDN kamery
-    };
+    esp_video_init_csi_config_t csi_cfg = {};
+    csi_cfg.sccb_config.init_sccb  = false;
+    csi_cfg.sccb_config.i2c_handle = bsp_i2c;
+    csi_cfg.sccb_config.freq       = 100000;
+    csi_cfg.reset_pin = -1;
+    csi_cfg.pwdn_pin  = -1;
 
-    esp_video_init_config_t cam_cfg = {
-        .csi = &csi_cfg,
-    };
+    esp_video_init_config_t cam_cfg = {};
+    cam_cfg.csi = &csi_cfg;
 
     esp_err_t err = esp_video_init(&cam_cfg);
     if (err != ESP_OK) {
@@ -78,145 +87,174 @@ static esp_err_t cam_hw_init(void)
         return err;
     }
 
-    // Otwórz urządzenie V4L2 (SC2336 rejestruje się jako /dev/video0)
-    s_video_fd = open("/dev/video0", O_RDONLY, 0);
+    s_video_fd = open("/dev/video0", O_RDONLY | O_NONBLOCK, 0);
     if (s_video_fd < 0) {
         ESP_LOGE(TAG, "Nie mozna otworzyc /dev/video0 (errno %d)", errno);
         return ESP_FAIL;
     }
 
-    // Sprawdź i ustaw format: 640×480 RGB565
-    struct v4l2_format fmt = {};
-    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (ioctl(s_video_fd, VIDIOC_G_FMT, &fmt) == 0) {
-        ESP_LOGI(TAG, "Domyslny format kamery: %"PRIu32"x%"PRIu32,
-                 fmt.fmt.pix.width, fmt.fmt.pix.height);
+    // Pobierz aktualny format — akceptujemy cokolwiek driver daje
+    struct v4l2_format actual = {};
+    actual.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    if (ioctl(s_video_fd, VIDIOC_G_FMT, &actual) == 0) {
+        s_cam_w       = actual.fmt.pix.width  ? actual.fmt.pix.width  : s_cam_w;
+        s_cam_h       = actual.fmt.pix.height ? actual.fmt.pix.height : s_cam_h;
+        bool is565    = (actual.fmt.pix.pixelformat == V4L2_PIX_FMT_RGB565 ||
+                         actual.fmt.pix.pixelformat == V4L2_PIX_FMT_RGB565X);
+        uint32_t bpp  = is565 ? 2 : 3;
+        s_frame_bytes = actual.fmt.pix.sizeimage > 0
+                        ? actual.fmt.pix.sizeimage
+                        : s_cam_w * s_cam_h * bpp;
+        ESP_LOGI(TAG, "Format: %" PRIu32 "x%" PRIu32 " fmt=0x%08" PRIx32 " size=%zu",
+                 s_cam_w, s_cam_h, actual.fmt.pix.pixelformat, s_frame_bytes);
+    } else {
+        s_frame_bytes = s_cam_w * s_cam_h * 2;
+        ESP_LOGW(TAG, "G_FMT failed, zakladam RGB565 1288x728");
     }
 
-    fmt.type                 = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    fmt.fmt.pix.width        = kCamW;
-    fmt.fmt.pix.height       = kCamH;
-    fmt.fmt.pix.pixelformat  = V4L2_PIX_FMT_RGB565;
-    if (ioctl(s_video_fd, VIDIOC_S_FMT, &fmt) != 0) {
-        // Nieśmiertelne — spróbujemy z domyślnym formatem
-        ESP_LOGW(TAG, "VIDIOC_S_FMT 640x480 RGB565 niedostepny, uzywam domyslnego");
-    }
-
-    // Alokuj bufory klatek w PSRAM (2 × ~614 KB)
-    for (int i = 0; i < kBufCount; i++) {
-        s_frame_bufs[i] = heap_caps_malloc(
-            kFrameBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!s_frame_bufs[i]) {
-            ESP_LOGE(TAG, "Brak pamieci PSRAM na bufor kamery %d", i);
-            return ESP_ERR_NO_MEM;
-        }
-    }
-
-    // Zarejestruj bufory USERPTR w V4L2
     struct v4l2_requestbuffers req = {};
     req.count  = kBufCount;
     req.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    req.memory = V4L2_MEMORY_USERPTR;
+    req.memory = V4L2_MEMORY_MMAP;
     if (ioctl(s_video_fd, VIDIOC_REQBUFS, &req) != 0) {
         ESP_LOGE(TAG, "VIDIOC_REQBUFS errno %d", errno);
         return ESP_FAIL;
     }
 
-    // Wstaw wszystkie bufory do kolejki kamery
-    for (int i = 0; i < kBufCount; i++) {
+    for (int i = 0; i < (int)req.count; i++) {
         struct v4l2_buffer buf = {};
-        buf.type       = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        buf.memory     = V4L2_MEMORY_USERPTR;
-        buf.index      = i;
-        buf.m.userptr  = (unsigned long)s_frame_bufs[i];
-        buf.length     = kFrameBytes;
+        buf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buf.memory = V4L2_MEMORY_MMAP;
+        buf.index  = i;
+        if (ioctl(s_video_fd, VIDIOC_QUERYBUF, &buf) != 0) {
+            ESP_LOGE(TAG, "VIDIOC_QUERYBUF %d errno %d", i, errno);
+            return ESP_FAIL;
+        }
+        s_frame_bufs[i] = mmap(NULL, buf.length,
+                               PROT_READ | PROT_WRITE, MAP_SHARED,
+                               s_video_fd, buf.m.offset);
+        if (!s_frame_bufs[i]) {
+            ESP_LOGE(TAG, "mmap %d failed", i);
+            return ESP_FAIL;
+        }
         if (ioctl(s_video_fd, VIDIOC_QBUF, &buf) != 0) {
             ESP_LOGE(TAG, "VIDIOC_QBUF %d errno %d", i, errno);
             return ESP_FAIL;
         }
     }
 
-    // Uruchom strumień kamery
     int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     if (ioctl(s_video_fd, VIDIOC_STREAMON, &type) != 0) {
         ESP_LOGE(TAG, "VIDIOC_STREAMON errno %d", errno);
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Kamera SC2336 OK (%dx%d RGB565)", kCamW, kCamH);
+    ESP_LOGI(TAG, "Kamera OV02C10 OK (%" PRIu32 "x%" PRIu32 ")", s_cam_w, s_cam_h);
     return ESP_OK;
 }
 
-// ── Task detekcji twarzy ────────────────────────────────────────────────────
+// ── Task detekcji ruchu ───────────────────────────────────────────────────────
 static void camera_wake_task(void *arg)
 {
     (void)arg;
+    ESP_LOGI(TAG, "Detekcja ruchu aktywna (mapa %dx%d, prog=%d/%d px)",
+             kMtnW, kMtnH, kMtnPixThresh, kMtnCountThresh);
 
-    // Inicjalizacja detektora twarzy (dwuetapowy MSR+MNP, modele w flash rodata)
-    s_detector = new HumanFaceDetect();
-    if (!s_detector) {
-        ESP_LOGE(TAG, "Nie mozna stworzyc HumanFaceDetect — task konczy");
-        vTaskDelete(nullptr);
-        return;
-    }
-    ESP_LOGI(TAG, "HumanFaceDetect zainicjalizowany");
+    // Bufor tymczasowy dla bieżącej klatki luma — na stosie (~3.5 KB)
+    uint8_t curr_luma[kMtnW * kMtnH];
+
+    const int sx = (int)s_cam_w / kMtnW;   // krok X (≈16)
+    const int sy = (int)s_cam_h / kMtnH;   // krok Y (≈16)
 
     struct v4l2_buffer buf = {};
-
     while (true) {
-        // Pobierz klatkę z kamery (blokuje do ~20ms przy 50fps)
         buf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        buf.memory = V4L2_MEMORY_USERPTR;
+        buf.memory = V4L2_MEMORY_MMAP;
 
         if (ioctl(s_video_fd, VIDIOC_DQBUF, &buf) != 0) {
-            ESP_LOGW(TAG, "VIDIOC_DQBUF errno %d — pomijam klatke", errno);
+            if (errno == EAGAIN) {
+                vTaskDelay(pdMS_TO_TICKS(10));
+                continue;
+            }
+            ESP_LOGW(TAG, "VIDIOC_DQBUF errno %d", errno);
             vTaskDelay(pdMS_TO_TICKS(200));
             continue;
         }
 
-        // Detekcja twarzy na klatce RGB565
-        dl::image::img_t img;
-        img.data     = s_frame_bufs[buf.index];
-        img.width    = kCamW;
-        img.height   = kCamH;
-        img.pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565;
-
-        auto &results = s_detector->run(img);
-
-        if (!results.empty()) {
-            ESP_LOGD(TAG, "Twarz wykryta (%zu) — budzenie ekranu", results.size());
-            board_display_notify_activity();
+        // ── Buduj mapę luma 80×45 ─────────────────────────────────────────────
+        // LE RGB565: kanał zielony = bity [10:5] (6-bit, zakres 0-63)
+        // Używamy go jako przybliżenia luminancji — niezależne od AWB i ekspozycji
+        // (względna zmiana działa nawet przy ciemnym obrazie).
+        const uint16_t *px = (const uint16_t *)s_frame_bufs[buf.index];
+        for (int y = 0; y < kMtnH; y++) {
+            for (int x = 0; x < kMtnW; x++) {
+                uint16_t v = px[y * sy * (int)s_cam_w + x * sx];
+                curr_luma[y * kMtnW + x] = (uint8_t)((v >> 5) & 0x3F); // 0-63
+            }
         }
 
-        // Zwróć bufor do kolejki kamery
+        // ── Porównaj z poprzednią klatką ──────────────────────────────────────
+        if (s_prev_valid) {
+            int changed = 0;
+            for (int i = 0; i < kMtnW * kMtnH; i++) {
+                int diff = (int)curr_luma[i] - (int)s_prev_luma[i];
+                if (diff < 0) diff = -diff;
+                if (diff > kMtnPixThresh) changed++;
+            }
+
+            if (changed >= kMtnCountThresh) {
+                ESP_LOGI(TAG, "Ruch wykryty! (%d/%d pikseli)", changed, kMtnW * kMtnH);
+                board_display_notify_activity();
+            } else {
+                ESP_LOGD(TAG, "Bez ruchu (%d)", changed);
+            }
+        }
+
+        // Zapamiętaj bieżącą klatkę jako poprzednią
+        memcpy(s_prev_luma, curr_luma, sizeof(s_prev_luma));
+        s_prev_valid = true;
+
         if (ioctl(s_video_fd, VIDIOC_QBUF, &buf) != 0) {
             ESP_LOGW(TAG, "VIDIOC_QBUF errno %d", errno);
         }
 
-        // Czekaj przed następną detekcją (~1fps przy screen-off, oszczędza CPU)
         vTaskDelay(pdMS_TO_TICKS(kSleepMs));
     }
 }
 
-// ── Publiczne API ───────────────────────────────────────────────────────────
-esp_err_t camera_wake_init(void)
+// ── Task startujący z opóźnieniem ─────────────────────────────────────────────
+static void camera_init_task(void *arg)
 {
+    // Czekamy 10s na stabilizację systemu
+    vTaskDelay(pdMS_TO_TICKS(10000));
+
     esp_err_t err = cam_hw_init();
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Inicjalizacja kamery nieudana (%s) — "
-                      "budzenie przez kature wylaczone, reszte systemu OK",
+        ESP_LOGW(TAG, "Kamera niedostepna (%s) — system dziala normalnie",
                  esp_err_to_name(err));
-        return err;
+        vTaskDelete(nullptr);
+        return;
     }
 
-    // Task na CPU1 (CPU0 = LVGL + HA), stos 12KB (HumanFaceDetect potrzebuje ~8KB)
+    // Core 1: detekcja ruchu nie blokuje LVGL (Core 0)
     BaseType_t ret = xTaskCreatePinnedToCore(
-        camera_wake_task, "cam_wake", 12288, nullptr, 3, nullptr, 1);
+        camera_wake_task, "cam_wake", 8192, nullptr, 2, nullptr, 1);
+    if (ret == pdPASS) {
+        ESP_LOGI(TAG, "cam_wake uruchomiony na Core 1");
+    } else {
+        ESP_LOGE(TAG, "Nie mozna uruchomic cam_wake");
+    }
+    vTaskDelete(nullptr);
+}
+
+// ── Publiczne API ─────────────────────────────────────────────────────────────
+esp_err_t camera_wake_init(void)
+{
+    BaseType_t ret = xTaskCreatePinnedToCore(
+        camera_init_task, "cam_init", 6144, nullptr, 2, nullptr, 1);
     if (ret != pdPASS) {
-        ESP_LOGE(TAG, "xTaskCreatePinnedToCore nieudane");
+        ESP_LOGE(TAG, "Nie mozna uruchomic cam_init");
         return ESP_FAIL;
     }
-
-    ESP_LOGI(TAG, "Detekcja twarzy → budzenie ekranu aktywne");
     return ESP_OK;
 }

@@ -9,6 +9,7 @@ idf_component_register(
         "panel_ui.cpp"
         "web_config.cpp"
         "camera_wake.cpp"
+        "features_config.cpp"
         "fonts/lv_font_polish_18.c"
         "fonts/lv_font_polish_20.c"
         "fonts/lv_font_polish_22.c"

@@ -14,6 +14,9 @@ aplikacja/__pycache__/
 # Sensitive files — credentials, tokens
 aplikacja/ustawienia.json
 
+# Claude Code local settings
+.claude/settings.local.json
+
 # IDE files
 .vscode/
 .idea/

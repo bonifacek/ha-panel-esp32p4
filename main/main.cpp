@@ -6,6 +6,7 @@
 #include "camera_wake.h"
 #include "panel_ui.h"
 #include "web_config.h"
+#include "features_config.h"
 #include "esp_hosted_ota.h"
 #include "esp_hosted.h"
 
@@ -39,6 +40,7 @@
 
 static const char *TAG = "ha_panel";
 static HaRuntimeConfig s_ha_config;
+static HwFeatures s_hw_features;
 
 // Wywolywane przez panel_ui po dotknięciu przycisku switch
 static void handle_command(size_t screen_idx, size_t tile_idx,
@@ -194,6 +196,7 @@ extern "C" void app_main(void)
     init_nvs();
     init_spiffs();       // montuje /storage (SPIFFS 7 MB) — musi byc przed ha_dashboard_load
     ha_config_load(&s_ha_config);
+    hw_features_load(&s_hw_features);
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -210,9 +213,7 @@ extern "C" void app_main(void)
     panel_ui_create(handle_command);
     board_display_unlock();
 
-    // Kamera → detekcja twarzy → budzenie ekranu (nieśmiertelna inicjalizacja)
-    camera_wake_init();
-
-    xTaskCreatePinnedToCore(battery_task, "battery_task", 8192,  nullptr, 4, nullptr, 0);
+    if (s_hw_features.camera)  camera_wake_init();
+    if (s_hw_features.battery) xTaskCreatePinnedToCore(battery_task, "battery_task", 8192, nullptr, 4, nullptr, 0);
     xTaskCreatePinnedToCore(network_task, "network_task", 8192,  nullptr, 5, nullptr, 0);
 }
