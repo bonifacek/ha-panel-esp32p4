@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ESP32-P4 Panel</title>
+<link rel="stylesheet" href="{{ ingress_path }}/static/style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- Nawigacja zakładek ─────────────────────────────────────────────────── -->
+  <nav class="tab-nav">
+    <button id="tabn-dashboard"  class="tab-nav-btn active" onclick="setMainTab('dashboard')">
+      📊 Dashboard
+    </button>
+    <button id="tabn-tts" class="tab-nav-btn" onclick="setMainTab('tts')">
+      🔊 <span data-i18n="tab_tts">Voice notifications</span>
+    </button>
+  </nav>
+
+  <header class="header">
+    <div class="header-left">
+      <span class="logo">⬡ ESP32-P4 Panel</span>
+      <span id="device-status" class="status-badge" data-i18n="checking">Checking...</span>
+    </div>
+    <div class="header-right">
+      <button id="lang-btn" class="btn btn-ghost" onclick="toggleLang()" style="font-weight:700;min-width:38px">PL</button>
+      <button id="btn-import" class="btn btn-ghost">Import JSON</button>
+      <button id="btn-export" class="btn btn-ghost">Export JSON</button>
+      <button id="btn-fetch" class="btn btn-secondary">⬇ <span data-i18n="btn_fetch">Fetch from device</span></button>
+      <button id="btn-save" class="btn btn-secondary" data-i18n="btn_save">Save</button>
+      <button id="btn-send" class="btn btn-primary" data-i18n="btn_send">Send to device</button>
+    </div>
+  </header>
+
+  <!-- ══ Zakładka: Dashboard ═══════════════════════════════════════════════ -->
+  <div id="tab-dashboard" class="main-tab">
+  <div class="main-layout">
+
+    <!-- Entity browser -->
+    <aside class="entity-panel">
+      <div class="entity-panel-header">
+        <div class="entity-panel-title-row">
+          <h3 data-i18n="ha_entities">HA Entities</h3>
+          <span id="entity-count" class="entity-count"></span>
+        </div>
+        <input id="entity-search" type="text" placeholder="Search..." data-i18n-ph="search" class="search-input">
+      </div>
+      <div id="entity-list" class="entity-list">
+        <div class="loading" data-i18n="loading_entities">Loading entities...</div>
+      </div>
+    </aside>
+
+    <!-- Editor -->
+    <main class="editor">
+
+      <!-- Pasek ekranów + przełącznik widoku -->
+      <div class="screen-tabs">
+        <div id="screen-tab-list" class="tab-list"></div>
+        <button id="btn-add-screen"   class="btn btn-sm btn-secondary">+ <span data-i18n="screen">Screen</span></button>
+        <button id="btn-set-default"  class="btn btn-sm btn-ghost"
+                data-i18n-title="set_default_title"><span data-i18n="btn_default">★ Default</span></button>
+        <div class="view-toggle">
+          <button id="btn-view-list"   class="view-btn"        data-i18n-title="view_list_title">📋 <span data-i18n="view_list">List</span></button>
+          <button id="btn-view-canvas" class="view-btn active" data-i18n-title="view_canvas_title">🖥 Canvas</button>
+        </div>
+      </div>
+
+      <!-- ── Widok listy (domyślny) ─────────────────────────────────────── -->
+      <div id="view-list" class="view-content hidden">
+        <div id="tiles-container" class="tiles-container"></div>
+        <div class="add-tile-wrap">
+          <button id="btn-add-tile" class="btn btn-dashed">+ <span data-i18n="add_tile">Add tile</span></button>
+        </div>
+      </div>
+
+      <!-- ── Widok Canvas ────────────────────────────────────────────────── -->
+      <div id="view-canvas" class="view-content">
+        <div class="canvas-hint" data-i18n-html="canvas_hint">
+          Drag tile to move &nbsp;•&nbsp;
+          ▪ bottom-right corner = resize &nbsp;•&nbsp;
+          Grid 16 px &nbsp;•&nbsp;
+          Drop entity from list onto tile
+        </div>
+        <div id="canvas-scroll" class="canvas-scroll">
+          <div id="esp-canvas" class="esp-canvas"></div>
+        </div>
+        <!-- Właściwości zaznaczonego kafelka (poniżej canvasu) -->
+        <div id="canvas-tile-props" class="canvas-tile-props hidden"></div>
+        <div class="add-tile-wrap">
+          <button id="btn-add-tile-canvas" class="btn btn-dashed">+ <span data-i18n="add_tile">Add tile</span></button>
+        </div>
+      </div>
+
+    </main>
+  </div><!-- /main-layout -->
+  </div><!-- /tab-dashboard -->
+
+  <!-- ══ Zakładka: Powiadomienia głosowe ═══════════════════════════════════ -->
+  <div id="tab-tts" class="main-tab hidden">
+    <div class="tts-wrap">
+
+      <div class="tts-head">
+        <h2 data-i18n="tab_tts">Voice notifications</h2>
+        <p class="tts-desc" data-i18n-html="tts_desc">
+          When a Home Assistant entity changes state, the ESP32 panel speaks the defined
+          text through the ES8311 speaker.
+          Requires speaker enabled on the panel and a TTS engine <strong>Piper</strong>
+          (or other WAV) in HA.
+        </p>
+      </div>
+
+      <!-- Rules table -->
+      <div class="tts-rules-container">
+        <table class="tts-table">
+          <thead>
+            <tr>
+              <th style="width:36px" data-i18n="tts_col_active">Active</th>
+              <th data-i18n="tts_col_entity">Entity</th>
+              <th style="width:110px" data-i18n="tts_col_from">State: from</th>
+              <th style="width:110px" data-i18n="tts_col_to">State: to</th>
+              <th data-i18n="tts_col_text">Text to speak</th>
+              <th style="width:90px"></th>
+            </tr>
+          </thead>
+          <tbody id="tts-tbody">
+            <tr id="tts-empty-row">
+              <td colspan="6" style="text-align:center;color:#64748b;padding:24px"
+                  data-i18n="tts_no_rules">
+                No rules. Click "+ Add rule" to start.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="tts-actions">
+        <button class="btn btn-dashed" onclick="addTtsRule()">+ <span data-i18n="tts_add_rule">Add rule</span></button>
+        <button class="btn btn-primary" onclick="saveTtsRules()">💾 <span data-i18n="tts_save_rules">Save rules</span></button>
+        <span id="tts-save-status" class="save-status"></span>
+      </div>
+
+      <!-- State hints -->
+      <details class="tts-hint-box">
+        <summary data-i18n="tts_hint_summary">Typical state values</summary>
+        <div class="tts-hint-grid">
+          <div><strong>person / device_tracker</strong><br>
+            <code>home</code> — <span data-i18n="state_home">at home</span><br>
+            <code>not_home</code> — <span data-i18n="state_not_home">away</span></div>
+          <div><strong>binary_sensor / switch / light</strong><br>
+            <code>on</code> — <span data-i18n="state_on">on / detected</span><br>
+            <code>off</code> — <span data-i18n="state_off">off / clear</span></div>
+          <div><strong>lock</strong><br>
+            <code>locked</code> — <span data-i18n="state_locked">locked</span><br>
+            <code>unlocked</code> — <span data-i18n="state_unlocked">unlocked</span></div>
+          <div><strong>alarm_control_panel</strong><br>
+            <code>armed_away</code> — <span data-i18n="state_armed">armed</span><br>
+            <code>disarmed</code> — <span data-i18n="state_disarmed">disarmed</span></div>
+        </div>
+        <p style="margin:8px 0 0;color:#64748b;font-size:12px" data-i18n-html="tts_wildcard_hint">
+          The "State: from/to" field accepts <code>*</code> as any state.
+          Example: from <code>*</code> to <code>not_home</code> triggers the rule
+          every time the entity changes to not_home.
+        </p>
+      </details>
+
+    </div><!-- /tts-wrap -->
+  </div><!-- /tab-tts -->
+
+</div><!-- /app -->
+
+<!-- Entity picker modal (TTS) ──────────────────────────────────────────── -->
+<div id="tts-entity-modal" class="modal hidden">
+  <div class="modal-backdrop" onclick="closeTtsEntityModal()"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3 data-i18n="pick_entity">Pick entity</h3>
+      <button class="modal-close" onclick="closeTtsEntityModal()">×</button>
+    </div>
+    <div class="modal-search-wrap">
+      <input id="tts-modal-search" type="text" placeholder="Search entities..."
+             data-i18n-ph="search_entities" class="search-input" oninput="filterTtsEntityModal(this.value)">
+    </div>
+    <div id="tts-modal-list" class="entity-list"></div>
+  </div>
+</div>
+
+<!-- restored original modal below -->
+<div id="entity-modal" class="modal hidden">
+  <div class="modal-backdrop" onclick="closeEntityModal()"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3 data-i18n="pick_entity">Pick entity</h3>
+      <button class="modal-close" onclick="closeEntityModal()">×</button>
+    </div>
+    <div class="modal-search-wrap">
+      <input id="modal-search" type="text" placeholder="Search entities..."
+             data-i18n-ph="search_entities" class="search-input">
+    </div>
+    <div id="modal-entity-list" class="entity-list"></div>
+  </div>
+</div>
+
+<!-- Camera entity picker modal ──────────────────────────────────────────── -->
+<div id="camera-entity-modal" class="modal hidden">
+  <div class="modal-backdrop" onclick="closeCameraModal()"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>📷 <span data-i18n="cam_pick">Pick camera</span></h3>
+      <button class="modal-close" onclick="closeCameraModal()">×</button>
+    </div>
+    <div class="modal-search-wrap">
+      <input id="cam-modal-search" type="text" placeholder="camera.xxx"
+             class="search-input" oninput="filterCameraModal(this.value)">
+    </div>
+    <div id="cam-modal-list" class="entity-list"></div>
+  </div>
+</div>
+
+<input type="file" id="file-import" accept=".json" hidden>
+
+<script>const BASE = "{{ ingress_path }}";</script>
+<script src="{{ ingress_path }}/static/app.js"></script>
+</body>
+</html>

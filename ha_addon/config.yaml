@@ -1,0 +1,23 @@
+name: "ESP32-P4 Panel"
+description: "Dashboard editor dla ESP32-P4 HA Panel"
+version: "1.1.0"
+slug: "esp32p4_panel"
+init: false
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+homeassistant_api: true
+ingress: true
+ingress_port: 8765
+panel_icon: mdi:tablet-dashboard
+panel_title: "Panel P4"
+startup: services
+boot: manual
+options:
+  device_ip: "192.168.1.100"
+  device_port: 80
+schema:
+  device_ip: str
+  device_port: int
