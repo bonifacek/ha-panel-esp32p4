@@ -15,6 +15,9 @@ managed_components/
 *.elf
 *.map
 
+# Wyjatek: skompilowany firmware gotowy do flashowania
+!firmware/*.bin
+
 # Aplikacja pomocnicza (lokalne narzedzie konfiguracyjne — nie czesc firmware)
 aplikacja/
 
