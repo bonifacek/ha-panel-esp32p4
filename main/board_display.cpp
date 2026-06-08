@@ -140,6 +140,9 @@ esp_err_t board_display_init(void)
             .sw_rotate = true,
         },
     };
+    // Zwiekszamy stos tasku LVGL: domyslne 7168B nie wystarczy dla sw_rotate +
+    // 2 zakladek + glebokiego drzewa obiektow. 20KB = bezpieczny margines.
+    cfg.lvgl_port_cfg.task_stack = 20480;
 
     s_display = bsp_display_start_with_config(&cfg);
     if (s_display == nullptr) {

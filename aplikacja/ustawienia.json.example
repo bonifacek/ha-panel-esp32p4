@@ -1,4 +1,0 @@
-{
-  "ha_url": "ws://192.168.1.10:8123/api/websocket",
-  "ha_token": "WSTAW_TUTAJ_SWOJ_TOKEN_HA"
-}

@@ -7,7 +7,7 @@
 using UiCommandCallback = void (*)(size_t screen_idx, size_t tile_idx,
                                    size_t row_idx, bool turn_on);
 
-// Tworzy caly interfejs (status bar + tabview z ekranami)
+// Tworzy caly interfejs (status bar + tabview z ekranami).
 void panel_ui_create(UiCommandCallback command_callback);
 
 // Aktualizuje stan wiersza (text + kolor kafelka)

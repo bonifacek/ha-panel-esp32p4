@@ -85,12 +85,20 @@ static void parse_row(cJSON *obj, HaRow *row)
     get_str("unit",      row->unit,      sizeof(row->unit));
 
     // Typ sensora — opcjonalne pole "sensor_type" w JSON
-    // Specjalna wartość "switch" wymusza EntityKind::Switch niezależnie od domeny
+    // Specjalne wartości:
+    //   "switch"   → EntityKind::Switch (niezależnie od domeny)
+    //   "presence" → EntityKind::Presence (person/device_tracker)
     cJSON *st_item = cJSON_GetObjectItemCaseSensitive(obj, "sensor_type");
-    bool forced_switch = false;
+    bool forced_switch   = false;
+    bool forced_presence = false;
+    bool forced_device   = false;
     if (cJSON_IsString(st_item) && st_item->valuestring) {
         const char *s = st_item->valuestring;
-        if      (strcmp(s, "switch")      == 0) { forced_switch = true;
+        if      (strcmp(s, "switch")      == 0) { forced_switch   = true;
+                                                   row->sensor_type = SensorType::Generic; }
+        else if (strcmp(s, "presence")    == 0) { forced_presence = true;
+                                                   row->sensor_type = SensorType::Generic; }
+        else if (strcmp(s, "device")      == 0) { forced_device   = true;
                                                    row->sensor_type = SensorType::Generic; }
         else if (strcmp(s, "temperature") == 0)   row->sensor_type = SensorType::Temperature;
         else if (strcmp(s, "humidity")    == 0)   row->sensor_type = SensorType::Humidity;
@@ -103,10 +111,28 @@ static void parse_row(cJSON *obj, HaRow *row)
         row->sensor_type = SensorType::Generic;
     }
 
+    // Tryb wyswietlania wiersza ("text" / "arc")
+    cJSON *dm_item = cJSON_GetObjectItemCaseSensitive(obj, "display_mode");
+    row->display_mode = RowDisplayMode::Auto;
+    if (cJSON_IsString(dm_item) && dm_item->valuestring) {
+        if      (strcmp(dm_item->valuestring, "arc")  == 0) row->display_mode = RowDisplayMode::Arc;
+        else if (strcmp(dm_item->valuestring, "text") == 0) row->display_mode = RowDisplayMode::Text;
+    }
+
     extract_domain(row->entity_id, row->domain, sizeof(row->domain));
-    // sensor_type:"switch" nadpisuje wykrywanie na podstawie domeny
-    row->kind = (forced_switch || is_switch_domain(row->domain))
-                ? EntityKind::Switch : EntityKind::Sensor;
+    // Wyznacz EntityKind w kolejności priorytetów
+    if (forced_device) {
+        row->kind = EntityKind::Device;
+    } else if (forced_presence) {
+        row->kind = EntityKind::Presence;
+    } else if (forced_switch || is_switch_domain(row->domain)) {
+        row->kind = EntityKind::Switch;
+    } else if (strcmp(row->domain, "person") == 0 ||
+               strcmp(row->domain, "device_tracker") == 0) {
+        row->kind = EntityKind::Presence;   // auto-detekcja bez explicit sensor_type
+    } else {
+        row->kind = EntityKind::Sensor;
+    }
 
     if (row->label[0] == '\0')
         strlcpy(row->label, row->entity_id, sizeof(row->label));
@@ -118,6 +144,9 @@ static void parse_tile(cJSON *obj, HaTile *tile)
     strlcpy(tile->label,
             (cJSON_IsString(lbl) && lbl->valuestring) ? lbl->valuestring : "Kafelek",
             sizeof(tile->label));
+
+    // Typ kafelka (camera usunięta — zawsze Normal)
+    tile->type = TileType::Normal;
 
     // Layout (pionowy / poziomy)
     cJSON *layout_j = cJSON_GetObjectItemCaseSensitive(obj, "layout");
@@ -191,8 +220,14 @@ esp_err_t ha_dashboard_load()
         return ESP_OK;
     }
 
-    char *body = static_cast<char *>(calloc(1, (size_t)file_size + 1));
-    if (!body) { fclose(f); return ESP_ERR_NO_MEM; }
+    char *body = static_cast<char *>(
+        heap_caps_calloc(1, (size_t)file_size + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!body) body = static_cast<char *>(calloc(1, (size_t)file_size + 1));
+    if (!body) {
+        fclose(f);
+        ESP_LOGW(TAG, "OOM przy ladowaniu dashboardu (%ld B) — pusta konfiguracja", file_size);
+        return ESP_OK;
+    }
 
     size_t rd = fread(body, 1, (size_t)file_size, f);
     fclose(f);
@@ -201,8 +236,8 @@ esp_err_t ha_dashboard_load()
     cJSON *root = cJSON_Parse(body);
     free(body);
     if (!root) {
-        ESP_LOGW(TAG, "JSON dashboardu niepoprawny");
-        return ESP_ERR_INVALID_STATE;
+        ESP_LOGW(TAG, "JSON dashboardu niepoprawny lub pusty — pusta konfiguracja");
+        return ESP_OK;
     }
 
     cJSON *def = cJSON_GetObjectItemCaseSensitive(root, "default_screen");

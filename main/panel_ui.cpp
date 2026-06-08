@@ -3,12 +3,17 @@
 #include "board_display.h"
 #include "lvgl.h"
 #include "polish_fonts.h"
+#include "esp_log.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <time.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+static const char *TAG = "panel_ui";
 
 // ---------------------------------------------------------------------------
 // Font ikon FontAwesome (fa-solid-900.ttf, size 18)
@@ -73,6 +78,10 @@ static bool      s_switch_states[kHaMaxScreens][kHaMaxTiles][kHaMaxRows];
 static lv_obj_t *s_icon_labels[kHaMaxScreens][kHaMaxTiles][kHaMaxRows];
 // Strzalki trendu (sensor): [screen][tile][row]
 static lv_obj_t  *s_trend_labels[kHaMaxScreens][kHaMaxTiles][kHaMaxRows];
+// Wskazniki kolowe (arc, sensor w trybie Arc): [screen][tile][row]
+static lv_obj_t  *s_arc_widgets[kHaMaxScreens][kHaMaxTiles][kHaMaxRows];
+// Krople statusu urządzenia (Device): [screen][tile][row]
+static lv_obj_t  *s_device_dots[kHaMaxScreens][kHaMaxTiles][kHaMaxRows];
 static float      s_prev_num_value[kHaMaxScreens][kHaMaxTiles][kHaMaxRows];
 static bool       s_has_num_value[kHaMaxScreens][kHaMaxTiles][kHaMaxRows];
 static TrendDir   s_trend_dir[kHaMaxScreens][kHaMaxTiles][kHaMaxRows];
@@ -179,10 +188,11 @@ static void trend_timer_cb(lv_timer_t *timer)
 }
 
 // Zmiana koloru etykiety switch + krotki blask
+// ON: zielony tekst + ciemno-zielone tlo; OFF: teal tekst + ciemne tlo
 static void switch_label_flash(lv_obj_t *lbl, bool is_on)
 {
-    lv_obj_set_style_bg_color(lbl, lv_color_hex(is_on ? kColorSwitchOnBg : kColorSwitchOffBg), 0);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(is_on ? kColorAccent : kColorDanger), 0);
+    lv_obj_set_style_bg_color(lbl, lv_color_hex(is_on ? 0x0C2E22 : 0x0C141B), 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(is_on ? 0x22C55E : kColorAccent), 0);
     lv_obj_set_style_bg_opa(lbl, LV_OPA_COVER, 0);
 
     lv_anim_t a;
@@ -201,7 +211,19 @@ static void switch_label_flash(lv_obj_t *lbl, bool is_on)
 // Dobiera ikonę do wiersza encji — sensor_type ma priorytet przed jednostką
 static const char *icon_for_row(const HaRow *row)
 {
-    if (row->kind == EntityKind::Switch) return ICON_PLUG;
+    if (row->kind == EntityKind::Presence || row->kind == EntityKind::Device) {
+        return "";  // brak dedykowanej ikony — Device uzywa tylko kola koloru
+    }
+
+    if (row->kind == EntityKind::Switch) {
+        const char *d = row->domain;
+        if (strcmp(d, "light") == 0)                            return ICON_BULB;
+        if (strcmp(d, "fan") == 0)                              return ICON_SNOW;
+        if (strcmp(d, "climate") == 0)                          return ICON_FIRE;
+        if (strcmp(d, "switch") == 0 ||
+            strcmp(d, "input_boolean") == 0)                    return ICON_PLUG;
+        return ICON_PLUG;  // cover, media_player, automation itp.
+    }
 
     // SensorType-based (precyzyjny — ustawiany przez uzytkownika w edytorze)
     switch (row->sensor_type) {
@@ -229,7 +251,17 @@ static const char *icon_for_row(const HaRow *row)
 // Poczatkowy (statyczny) kolor ikony — zanim przyjdzie pierwsza wartosc
 static lv_color_t icon_color_for_row(const HaRow *row)
 {
-    if (row->kind == EntityKind::Switch) return lv_color_hex(0x81C784); // zielony — wtyczka
+    if (row->kind == EntityKind::Presence || row->kind == EntityKind::Device) {
+        return lv_color_hex(kColorMuted);
+    }
+
+    if (row->kind == EntityKind::Switch) {
+        const char *d = row->domain;
+        if (strcmp(d, "light") == 0)       return lv_color_hex(0xFFE082); // ciepla zolc — zarowka
+        if (strcmp(d, "fan") == 0)         return lv_color_hex(0x4FC3F7); // jasno-niebieski — wiatr
+        if (strcmp(d, "climate") == 0)     return lv_color_hex(0xFF7043); // pomaranczowy — ogrzewanie
+        return lv_color_hex(0x81C784);  // zielony — wtyczka (domyslny)
+    }
 
     switch (row->sensor_type) {
         case SensorType::Temperature: return lv_color_hex(0xFF7043); // pomaranczowy — termometr
@@ -274,6 +306,79 @@ static lv_color_t icon_color_for_value(SensorType type, float val)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Animacje ikon
+// ---------------------------------------------------------------------------
+
+// Zatrzymaj animacje, przywróć pełną opacity i obrót 0
+static void icon_anim_stop(lv_obj_t *icon)
+{
+    if (!icon) return;
+    lv_anim_delete(icon, nullptr);
+    lv_obj_set_style_opa(icon, LV_OPA_COVER, 0);
+    lv_obj_set_style_transform_rotation(icon, 0, 0);
+}
+
+// Żarówka ON: łagodne pulsowanie opacity 160 ↔ 255
+static void icon_anim_bulb_on(lv_obj_t *icon)
+{
+    if (!icon) return;
+    lv_anim_delete(icon, nullptr);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, icon);
+    lv_anim_set_exec_cb(&a, [](void *obj, int32_t v) {
+        lv_obj_set_style_opa(static_cast<lv_obj_t *>(obj), static_cast<lv_opa_t>(v), 0);
+    });
+    lv_anim_set_values(&a, 160, 255);
+    lv_anim_set_duration(&a, 1200);
+    lv_anim_set_playback_duration(&a, 1200);
+    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+    lv_anim_start(&a);
+}
+
+// Żarówka OFF: przyciemniona ikona (50%)
+static void icon_anim_bulb_off(lv_obj_t *icon)
+{
+    if (!icon) return;
+    lv_anim_delete(icon, nullptr);
+    lv_obj_set_style_opa(icon, LV_OPA_50, 0);
+    lv_obj_set_style_transform_rotation(icon, 0, 0);
+}
+
+// Wentylator ON: ciągły obrót 360° co 2s (pivot musi byc ustawiony przy tworzeniu)
+static void icon_anim_fan_on(lv_obj_t *icon)
+{
+    if (!icon) return;
+    lv_anim_delete(icon, nullptr);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, icon);
+    lv_anim_set_exec_cb(&a, [](void *obj, int32_t v) {
+        lv_obj_set_style_transform_rotation(static_cast<lv_obj_t *>(obj), v, 0);
+    });
+    lv_anim_set_values(&a, 0, 3600);       // 0.1° jednostki → 3600 = 360°
+    lv_anim_set_duration(&a, 2000);        // 1 obrót / 2s
+    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_path_cb(&a, lv_anim_path_linear);
+    lv_anim_start(&a);
+}
+
+// Zakres osi wskaznika kolowego dla danego typu sensora
+static void arc_range_for_sensor(SensorType type, int16_t *out_min, int16_t *out_max)
+{
+    switch (type) {
+        case SensorType::Temperature: *out_min = -20;  *out_max = 50;   break;
+        case SensorType::Humidity:    *out_min = 0;    *out_max = 100;  break;
+        case SensorType::Cpu:         *out_min = 0;    *out_max = 100;  break;
+        case SensorType::Memory:      *out_min = 0;    *out_max = 100;  break;
+        case SensorType::Power:       *out_min = 0;    *out_max = 3500; break;
+        case SensorType::Illuminance: *out_min = 0;    *out_max = 1000; break;
+        default:                      *out_min = 0;    *out_max = 100;  break;
+    }
+}
+
 // Parsuje pierwszą liczbę z łańcucha (np. "23.5" z "23.5 °C" lub "65" z "65%")
 static bool parse_first_float(const char *str, float *out)
 {
@@ -299,6 +404,22 @@ static void format_row_value(const HaRow *row, const char *value,
     if (out_len == 0) return;
     const char *safe = value ? value : "--";
     char formatted[64] = {};
+
+    // Device: bez tekstu statusu — wartosc nie jest wyswietlana jako tekst
+    if (row->kind == EntityKind::Device) {
+        strlcpy(out, "", out_len);
+        return;
+    }
+
+    if (row->kind == EntityKind::Presence) {
+        // home/not_home → czytelne polskie etykiety; inne stany (strefy) → as-is
+        if      (strcmp(safe, "home")     == 0) strlcpy(formatted, "W domu",    sizeof(formatted));
+        else if (strcmp(safe, "not_home") == 0) strlcpy(formatted, "Nieobecny", sizeof(formatted));
+        else                                    strlcpy(formatted, safe,         sizeof(formatted));
+        // Presence nie ma jednostki — format zawsze: "Etykieta: Stan"
+        snprintf(out, out_len, "%s: %s", row->label, formatted);
+        return;
+    }
 
     if (row->kind == EntityKind::Switch) {
         if (payload_is_on(safe)) {
@@ -483,9 +604,15 @@ static int32_t calc_tile_height(const HaTile *tile)
     // Pionowy: header: 30px + padding_top: 14px + padding_bot: 14px = 58
     int32_t h = 58;
     for (size_t r = 0; r < tile->row_count; ++r) {
-        h += 38;
-        if (tile->rows[r].kind == EntityKind::Switch)
-            h += 48;
+        const HaRow *row_r = &tile->rows[r];
+        if (row_r->kind == EntityKind::Switch) {
+            h += 50;  // dotykowy wiersz switch (bez osobnego przycisku)
+        } else if (row_r->kind == EntityKind::Sensor &&
+                   row_r->display_mode == RowDisplayMode::Arc) {
+            h += 88;  // kontener wskaznika kolowego
+        } else {
+            h += 38;  // standardowy wiersz (Sensor tekst / Presence / Device)
+        }
         if (r < tile->row_count - 1)
             h += 7;
     }
@@ -561,11 +688,34 @@ static void make_tile_card(lv_obj_t *parent,
                                   LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
             lv_obj_set_style_pad_column(cell, 4, 0);
 
+            // Device w ukladzie poziomym: tylko kolo koloru
+            if (row->kind == EntityKind::Device) {
+                lv_obj_t *dot = lv_obj_create(cell);
+                s_device_dots[screen_idx][tile_idx][r] = dot;
+                lv_obj_remove_style_all(dot);
+                lv_obj_set_size(dot, 18, 18);
+                lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+                lv_obj_set_style_bg_color(dot, lv_color_hex(0x4A5568), 0);
+                lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+                s_row_labels[screen_idx][tile_idx][r]    = nullptr;
+                s_icon_labels[screen_idx][tile_idx][r]   = nullptr;
+                s_switch_btns[screen_idx][tile_idx][r]   = nullptr;
+                s_switch_circles[screen_idx][tile_idx][r]= nullptr;
+                s_trend_labels[screen_idx][tile_idx][r]  = nullptr;
+                s_arc_widgets[screen_idx][tile_idx][r]   = nullptr;
+                continue;
+            }
+
             if (icon_glyph[0] != '\0') {
                 lv_obj_t *icon_lbl = lv_label_create(cell);
                 lv_label_set_text(icon_lbl, icon_glyph);
                 lv_obj_set_style_text_font(icon_lbl, &lv_font_icons_18, 0);
                 lv_obj_set_style_text_color(icon_lbl, icon_color_for_row(row), 0);
+                // Pivot na środku ikony — wymagany do animacji obrotu wentylator
+                if (row->kind == EntityKind::Switch && strcmp(row->domain, "fan") == 0) {
+                    lv_obj_set_style_transform_pivot_x(icon_lbl, 9, 0);
+                    lv_obj_set_style_transform_pivot_y(icon_lbl, 9, 0);
+                }
                 s_icon_labels[screen_idx][tile_idx][r] = icon_lbl;
             } else {
                 s_icon_labels[screen_idx][tile_idx][r] = nullptr;
@@ -585,9 +735,12 @@ static void make_tile_card(lv_obj_t *parent,
             lv_obj_set_style_text_color(lbl,
                 lv_color_hex(row->kind == EntityKind::Switch ? kColorAccent2 : kColorAccent), 0);
 
-            // Brak przyciskow i trendu w trybie poziomym (brak miejsca)
-            s_switch_btns[screen_idx][tile_idx][r]  = nullptr;
-            s_trend_labels[screen_idx][tile_idx][r] = nullptr;
+            // Brak przyciskow, trendu i arc w trybie poziomym (brak miejsca)
+            s_switch_btns[screen_idx][tile_idx][r]    = nullptr;
+            s_switch_circles[screen_idx][tile_idx][r] = nullptr;
+            s_trend_labels[screen_idx][tile_idx][r]   = nullptr;
+            s_arc_widgets[screen_idx][tile_idx][r]    = nullptr;
+            s_device_dots[screen_idx][tile_idx][r]    = nullptr;
         }
         return;  // koniec budowy karty poziomej
     }
@@ -610,9 +763,127 @@ static void make_tile_card(lv_obj_t *parent,
     // Wiersze encji
     for (size_t r = 0; r < tile->row_count; ++r) {
         const HaRow *row = &tile->rows[r];
-
-        // ── Kontener wiersza: [kolorowa ikona] + [etykieta wartosci] ─────────
         const char *icon_glyph = icon_for_row(row);
+
+        // ════════════════════════════════════════════════════════════════════
+        // DEVICE — tylko kolo koloru (bez tekstu statusu)
+        // ════════════════════════════════════════════════════════════════════
+        if (row->kind == EntityKind::Device) {
+            lv_obj_t *row_cont = lv_obj_create(card);
+            lv_obj_remove_style_all(row_cont);
+            lv_obj_set_size(row_cont, LV_PCT(100), 38);
+            lv_obj_set_flex_flow(row_cont, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(row_cont, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                                  LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            lv_obj_set_style_pad_column(row_cont, 6, 0);
+
+            // Etykieta nazwy encji (lewa strona)
+            lv_obj_t *dev_name = lv_label_create(row_cont);
+            lv_label_set_text(dev_name, row->label);
+            lv_obj_set_style_text_font(dev_name, &lv_font_polish_18, 0);
+            lv_obj_set_style_text_color(dev_name, lv_color_hex(kColorAccent2), 0);
+            lv_label_set_long_mode(dev_name, LV_LABEL_LONG_DOT);
+            lv_obj_set_flex_grow(dev_name, 1);
+
+            // Kolo statusu (prawa strona) — szare dopóki nie przyjdzie wartosc
+            lv_obj_t *dot = lv_obj_create(row_cont);
+            s_device_dots[screen_idx][tile_idx][r] = dot;
+            lv_obj_remove_style_all(dot);
+            lv_obj_set_size(dot, 22, 22);
+            lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_bg_color(dot, lv_color_hex(0x4A5568), 0);
+            lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+
+            s_row_labels[screen_idx][tile_idx][r]    = nullptr;
+            s_icon_labels[screen_idx][tile_idx][r]   = nullptr;
+            s_switch_btns[screen_idx][tile_idx][r]   = nullptr;
+            s_switch_circles[screen_idx][tile_idx][r]= nullptr;
+            s_trend_labels[screen_idx][tile_idx][r]  = nullptr;
+            s_arc_widgets[screen_idx][tile_idx][r]   = nullptr;
+            continue;
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // SENSOR w trybie ARC — wskaznik kolowy
+        // ════════════════════════════════════════════════════════════════════
+        if (row->kind == EntityKind::Sensor && row->display_mode == RowDisplayMode::Arc) {
+            lv_obj_t *arc_cont = lv_obj_create(card);
+            lv_obj_remove_style_all(arc_cont);
+            lv_obj_set_size(arc_cont, LV_PCT(100), 88);
+            lv_obj_set_flex_flow(arc_cont, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(arc_cont, LV_FLEX_ALIGN_START,
+                                  LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            lv_obj_set_style_pad_column(arc_cont, 8, 0);
+
+            // Ikona po lewej (jesli dostepna)
+            if (icon_glyph[0] != '\0') {
+                lv_obj_t *icon_lbl = lv_label_create(arc_cont);
+                lv_label_set_text(icon_lbl, icon_glyph);
+                lv_obj_set_style_text_font(icon_lbl, &lv_font_icons_18, 0);
+                lv_obj_set_style_text_color(icon_lbl, icon_color_for_row(row), 0);
+                lv_obj_set_style_bg_opa(icon_lbl, LV_OPA_TRANSP, 0);
+                s_icon_labels[screen_idx][tile_idx][r] = icon_lbl;
+            } else {
+                s_icon_labels[screen_idx][tile_idx][r] = nullptr;
+            }
+
+            // Kontener wskaznika (72x72) — dzieci moga sie nakladac
+            lv_obj_t *arc_wrap = lv_obj_create(arc_cont);
+            lv_obj_remove_style_all(arc_wrap);
+            lv_obj_set_size(arc_wrap, 72, 72);
+            lv_obj_clear_flag(arc_wrap, LV_OBJ_FLAG_SCROLLABLE);
+
+            // Wskaznik kolowy
+            lv_obj_t *arc = lv_arc_create(arc_wrap);
+            s_arc_widgets[screen_idx][tile_idx][r] = arc;
+            lv_obj_set_size(arc, 72, 72);
+            lv_obj_align(arc, LV_ALIGN_CENTER, 0, 0);
+            lv_obj_set_style_pad_all(arc, 0, 0);
+            lv_arc_set_bg_angles(arc, 135, 45);  // 270° jak speedometr
+
+            int16_t arc_min, arc_max;
+            arc_range_for_sensor(row->sensor_type, &arc_min, &arc_max);
+            lv_arc_set_range(arc, arc_min, arc_max);
+            lv_arc_set_value(arc, arc_min);
+
+            // Szare tlo piers cionka
+            lv_obj_set_style_arc_color(arc, lv_color_hex(0x2A3A4A), LV_PART_MAIN);
+            lv_obj_set_style_arc_width(arc, 7, LV_PART_MAIN);
+            // Kolorowy wskaznik
+            lv_obj_set_style_arc_color(arc, icon_color_for_row(row), LV_PART_INDICATOR);
+            lv_obj_set_style_arc_width(arc, 7, LV_PART_INDICATOR);
+            // Ukryj galbke — sam wyswietlacz
+            lv_obj_set_style_opa(arc, LV_OPA_TRANSP, LV_PART_KNOB);
+            lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE);
+
+            // Wartosc centrowana nad wskaznikiem
+            lv_obj_t *val_lbl = lv_label_create(arc_wrap);
+            s_row_labels[screen_idx][tile_idx][r] = val_lbl;
+            lv_label_set_text(val_lbl, "--");
+            lv_obj_set_style_text_font(val_lbl, &lv_font_polish_18, 0);
+            lv_obj_set_style_text_color(val_lbl, lv_color_hex(kColorText), 0);
+            lv_obj_set_style_bg_opa(val_lbl, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_text_align(val_lbl, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_align(val_lbl, LV_ALIGN_CENTER, 0, 0);
+
+            // Etykieta nazwy po prawej
+            lv_obj_t *name_lbl = lv_label_create(arc_cont);
+            lv_label_set_text(name_lbl, row->label);
+            lv_obj_set_style_text_font(name_lbl, &lv_font_polish_18, 0);
+            lv_obj_set_style_text_color(name_lbl, lv_color_hex(kColorAccent2), 0);
+            lv_label_set_long_mode(name_lbl, LV_LABEL_LONG_WRAP);
+            lv_obj_set_flex_grow(name_lbl, 1);
+
+            s_switch_btns[screen_idx][tile_idx][r]    = nullptr;
+            s_switch_circles[screen_idx][tile_idx][r] = nullptr;
+            s_trend_labels[screen_idx][tile_idx][r]   = nullptr;
+            s_device_dots[screen_idx][tile_idx][r]    = nullptr;
+            continue;
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // STANDARDOWY WIERSZ — tekst (Sensor / Switch / Presence)
+        // ════════════════════════════════════════════════════════════════════
         lv_obj_t *row_cont = lv_obj_create(card);
         lv_obj_remove_style_all(row_cont);
         lv_obj_set_size(row_cont, LV_PCT(100), LV_SIZE_CONTENT);
@@ -621,13 +892,36 @@ static void make_tile_card(lv_obj_t *parent,
                               LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_column(row_cont, 6, 0);
 
-        // Kolorowa ikona — widoczna tylko jesli encja ma przypisana ikone
+        // Switch: wiekszy padding + zaokraglenie + dotykowy efekt nacisku
+        if (row->kind == EntityKind::Switch) {
+            lv_obj_set_style_pad_all(row_cont, 8, 0);
+            lv_obj_set_style_radius(row_cont, 10, 0);
+            lv_obj_set_style_bg_color(row_cont, lv_color_hex(0x1C3040), LV_STATE_PRESSED);
+            lv_obj_set_style_bg_opa(row_cont, LV_OPA_COVER, LV_STATE_PRESSED);
+            lv_obj_add_flag(row_cont, LV_OBJ_FLAG_CLICKABLE);
+            const uint32_t packed = ((uint32_t)screen_idx << 8)
+                                  | ((uint32_t)tile_idx   << 4)
+                                  | (uint32_t)r;
+            lv_obj_add_event_cb(row_cont, switch_event_cb, LV_EVENT_CLICKED,
+                                (void *)(uintptr_t)packed);
+        }
+
+        // Kolorowa ikona — Switch startuje szary (OFF), sensor/presence normalny kolor
         if (icon_glyph[0] != '\0') {
             lv_obj_t *icon_lbl = lv_label_create(row_cont);
             lv_label_set_text(icon_lbl, icon_glyph);
             lv_obj_set_style_text_font(icon_lbl, &lv_font_icons_18, 0);
-            lv_obj_set_style_text_color(icon_lbl, icon_color_for_row(row), 0);
+            // Switch: ikona szara na starcie (zanim przyjdzie pierwsza wartosc)
+            lv_obj_set_style_text_color(icon_lbl,
+                row->kind == EntityKind::Switch
+                    ? lv_color_hex(kColorMuted)
+                    : icon_color_for_row(row), 0);
             lv_obj_set_style_bg_opa(icon_lbl, LV_OPA_TRANSP, 0);
+            // Pivot na środku ikony — wymagany do animacji obrotu wentylator
+            if (row->kind == EntityKind::Switch && strcmp(row->domain, "fan") == 0) {
+                lv_obj_set_style_transform_pivot_x(icon_lbl, 9, 0);
+                lv_obj_set_style_transform_pivot_y(icon_lbl, 9, 0);
+            }
             s_icon_labels[screen_idx][tile_idx][r] = icon_lbl;
         } else {
             s_icon_labels[screen_idx][tile_idx][r] = nullptr;
@@ -644,67 +938,29 @@ static void make_tile_card(lv_obj_t *parent,
 
         lv_label_set_text(lbl, initial);
 
-        // Switch: amber tekst (brak danych), sensor: teal tekst
-        style_value_label(lbl, row->kind == EntityKind::Switch
-                               ? kColorAccent2 : kColorAccent);
-        lv_obj_set_style_flex_grow(lbl, 1, 0);  // zajmij resztę szerokości kontenera
+        // Wszystkie wiersze startuja teal; switch zmieni sie po pierwszej wartosci
+        style_value_label(lbl, kColorAccent);
+        lv_obj_set_style_flex_grow(lbl, 1, 0);
 
-        // Sensor: strzalka trendu (dziecko etykiety, wyrownana do prawej)
+        // Sensor/Presence: strzalka trendu (dziecko etykiety, wyrownana do prawej)
         if (row->kind != EntityKind::Switch) {
             lv_obj_t *trend = lv_label_create(lbl);
             s_trend_labels[screen_idx][tile_idx][r] = trend;
             lv_label_set_text(trend, "");
             lv_obj_set_style_text_font(trend, &lv_font_montserrat_20, 0);
             lv_obj_set_style_bg_opa(trend, LV_OPA_TRANSP, 0);
-            lv_obj_set_style_opa(trend, LV_OPA_TRANSP, 0);  // poczatkowo niewidoczna
+            lv_obj_set_style_opa(trend, LV_OPA_TRANSP, 0);
             lv_obj_set_size(trend, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
             lv_obj_align(trend, LV_ALIGN_RIGHT_MID, -8, 0);
+        } else {
+            s_trend_labels[screen_idx][tile_idx][r] = nullptr;
         }
 
-        if (row->kind == EntityKind::Switch) {
-            lv_obj_t *btn = lv_btn_create(card);
-            s_switch_btns[screen_idx][tile_idx][r] = btn;
-
-            // Pełna szerokość, wyższy (pill toggle)
-            lv_obj_set_size(btn, LV_PCT(100), 52);
-            lv_obj_set_style_radius(btn, 12, 0);
-            lv_obj_set_style_bg_color(btn, lv_color_hex(kColorSwitchOffBtn), 0);
-            lv_obj_set_style_bg_color(btn, lv_color_hex(kColorSwitchOffPress), LV_STATE_PRESSED);
-            lv_obj_set_style_shadow_width(btn, 0, 0);
-            lv_obj_set_style_pad_hor(btn, 14, 0);
-            lv_obj_set_style_pad_ver(btn, 0, 0);
-            // Flex row: kółko + tekst
-            lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_ROW);
-            lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_START,
-                                  LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-            lv_obj_set_style_pad_column(btn, 12, 0);
-
-            // Kółko wskaźnika stanu (szare = brak danych)
-            lv_obj_t *circle = lv_obj_create(btn);
-            s_switch_circles[screen_idx][tile_idx][r] = circle;
-            lv_obj_remove_style_all(circle);
-            lv_obj_set_size(circle, 16, 16);
-            lv_obj_set_style_radius(circle, LV_RADIUS_CIRCLE, 0);
-            lv_obj_set_style_bg_color(circle, lv_color_hex(0x3A5060), 0);
-            lv_obj_set_style_bg_opa(circle, LV_OPA_COVER, 0);
-            lv_obj_clear_flag(circle, LV_OBJ_FLAG_CLICKABLE);
-
-            // Etykieta stanu
-            lv_obj_t *btn_lbl = lv_label_create(btn);
-            lv_label_set_text(btn_lbl, "-- brak danych --");
-            lv_obj_set_style_text_font(btn_lbl, &lv_font_polish_18, 0);
-            lv_obj_set_style_text_color(btn_lbl, lv_color_hex(kColorMuted), 0);
-            lv_obj_set_flex_grow(btn_lbl, 1);
-            lv_obj_set_style_text_align(btn_lbl, LV_TEXT_ALIGN_CENTER, 0);
-            lv_label_set_long_mode(btn_lbl, LV_LABEL_LONG_DOT);
-            lv_obj_clear_flag(btn_lbl, LV_OBJ_FLAG_CLICKABLE);
-
-            const uint32_t packed = ((uint32_t)screen_idx << 8)
-                                  | ((uint32_t)tile_idx   << 4)
-                                  | (uint32_t)r;
-            lv_obj_add_event_cb(btn, switch_event_cb, LV_EVENT_CLICKED,
-                                (void *)(uintptr_t)packed);
-        }
+        // Switch nie ma osobnego przycisku — wiersz jest dotykowy (patrz wyzej)
+        s_switch_btns[screen_idx][tile_idx][r]    = nullptr;
+        s_switch_circles[screen_idx][tile_idx][r] = nullptr;
+        s_device_dots[screen_idx][tile_idx][r]    = nullptr;
+        s_arc_widgets[screen_idx][tile_idx][r]    = nullptr;
     }
 }
 
@@ -715,6 +971,8 @@ static void make_screen_content(lv_obj_t *tab_content, size_t screen_idx)
 {
     const HaScreen *screen = ha_screen_get(screen_idx);
     if (!screen) return;
+    ESP_LOGI(TAG, "make_screen_content: screen=%u name=%s tiles=%u",
+             (unsigned)screen_idx, screen->name, (unsigned)screen->tile_count);
 
     lv_obj_set_style_bg_color(tab_content, lv_color_hex(kColorBackground), 0);
     lv_obj_set_style_bg_opa(tab_content, LV_OPA_COVER, 0);
@@ -741,7 +999,7 @@ static void make_screen_content(lv_obj_t *tab_content, size_t screen_idx)
 
     if (screen->tile_count == 0) {
         lv_obj_t *empty = lv_label_create(tab_content);
-        lv_label_set_text(empty, "Brak kafelkow. Skonfiguruj w panelu WWW.");
+        lv_label_set_text(empty, "No tiles configured. Set up in web panel.");
         lv_obj_set_style_text_font(empty, &lv_font_polish_22, 0);
         lv_obj_set_style_text_color(empty, lv_color_hex(kColorMuted), 0);
         return;
@@ -767,6 +1025,8 @@ void panel_ui_create(UiCommandCallback command_callback)
     memset(s_switch_states,  0, sizeof(s_switch_states));
     memset(s_icon_labels,    0, sizeof(s_icon_labels));
     memset(s_trend_labels,   0, sizeof(s_trend_labels));
+    memset(s_arc_widgets,    0, sizeof(s_arc_widgets));
+    memset(s_device_dots,    0, sizeof(s_device_dots));
     memset(s_prev_num_value, 0, sizeof(s_prev_num_value));
     memset(s_has_num_value,  0, sizeof(s_has_num_value));
     memset(s_trend_dir,      0, sizeof(s_trend_dir));   // TrendDir::None = 0
@@ -788,7 +1048,7 @@ void panel_ui_create(UiCommandCallback command_callback)
     if (ha_screen_count() == 0) {
         lv_obj_t *empty = lv_label_create(root);
         lv_label_set_text(empty,
-            "Brak ekranow. Skonfiguruj dashboard w panelu WWW.");
+            "No screens configured. Set up dashboard in web panel.");
         lv_obj_set_style_text_font(empty, &lv_font_polish_22, 0);
         lv_obj_set_style_text_color(empty, lv_color_hex(kColorMuted), 0);
         lv_obj_set_style_pad_all(empty, 20, 0);
@@ -798,8 +1058,22 @@ void panel_ui_create(UiCommandCallback command_callback)
     s_tabview = lv_tabview_create(root);
     lv_obj_set_flex_grow(s_tabview, 1);
     lv_obj_set_width(s_tabview, LV_PCT(100));
+    lv_obj_set_style_bg_color(s_tabview, lv_color_hex(kColorBackground), 0);
+    lv_obj_set_style_bg_opa(s_tabview, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_tabview, 0, 0);
+    lv_obj_set_style_pad_all(s_tabview, 0, 0);
     lv_tabview_set_tab_bar_position(s_tabview, LV_DIR_TOP);
     lv_tabview_set_tab_bar_size(s_tabview, 44);
+
+    // Kontener trésci (rodzic wszystkich tabów) — musi byc ciemny
+    // UWAGA: NIE ustawiamy pad_all na tv_content — to jest wewnetrzny lv_tileview
+    // i zmiana paddingu powoduje bledne obliczenia scroll range / layout loop w LVGL 9.
+    lv_obj_t *tv_content = lv_tabview_get_content(s_tabview);
+    if (tv_content) {
+        lv_obj_set_style_bg_color(tv_content, lv_color_hex(kColorBackground), 0);
+        lv_obj_set_style_bg_opa(tv_content, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(tv_content, 0, 0);
+    }
 
     lv_obj_t *tab_bar = lv_tabview_get_tab_bar(s_tabview);
     lv_obj_set_style_bg_color(tab_bar, lv_color_hex(kColorHeader), 0);
@@ -822,6 +1096,8 @@ void panel_ui_create(UiCommandCallback command_callback)
     }
 
     lv_tabview_set_act(s_tabview, (uint32_t)ha_default_screen(), LV_ANIM_OFF);
+    ESP_LOGI(TAG, "panel_ui_create done: %u screens, default=%u",
+             (unsigned)ha_screen_count(), (unsigned)ha_default_screen());
 }
 
 // ---------------------------------------------------------------------------
@@ -834,55 +1110,128 @@ void panel_ui_update_row(size_t screen_idx, size_t tile_idx,
         row_idx >= kHaMaxRows)
         return;
 
-    lv_obj_t *lbl = s_row_labels[screen_idx][tile_idx][row_idx];
-    if (!lbl) return;
-
     const HaScreen *screen = ha_screen_get(screen_idx);
     if (!screen || tile_idx >= screen->tile_count) return;
     if (row_idx >= screen->tiles[tile_idx].row_count) return;
     const HaRow *row = &screen->tiles[tile_idx].rows[row_idx];
 
-    const bool is_switch = (row->kind == EntityKind::Switch);
+    lv_obj_t *lbl = s_row_labels[screen_idx][tile_idx][row_idx];
+    // Uwaga: lbl moze byc nullptr dla Device / Arc (sprawdzamy nizej)
+
+    const bool is_switch   = (row->kind == EntityKind::Switch);
+    const bool is_presence = (row->kind == EntityKind::Presence);
+    const bool is_device   = (row->kind == EntityKind::Device);
+    const bool is_arc      = (row->kind == EntityKind::Sensor &&
+                               row->display_mode == RowDisplayMode::Arc);
     bool is_on = false;
     if (is_switch) {
         is_on = payload_is_on(value);
         s_switch_states[screen_idx][tile_idx][row_idx] = is_on;
     }
 
+    board_display_lock();
+
+    // ── Device: aktualizuj tylko kolo koloru ────────────────────────────────
+    if (is_device) {
+        lv_obj_t *dot = s_device_dots[screen_idx][tile_idx][row_idx];
+        if (dot) {
+            const bool active = value && (
+                strcmp(value, "home")        == 0 ||
+                strcasecmp(value, "on")      == 0 ||
+                strcasecmp(value, "true")    == 0 ||
+                strcmp(value, "active")      == 0
+            );
+            lv_obj_set_style_bg_color(dot,
+                lv_color_hex(active ? 0x22C55E : 0x4A5568), 0);
+        }
+        lv_obj_t *card = s_tile_cards[screen_idx][tile_idx];
+        if (card) {
+            lv_obj_set_style_bg_color(card,
+                online ? lv_color_hex(kColorCard) : lv_color_hex(kColorCardOffline), 0);
+            lv_obj_set_style_border_color(card,
+                online ? lv_color_hex(kColorAccent) : lv_color_hex(kColorDanger), 0);
+        }
+        board_display_unlock();
+        return;
+    }
+
+    // ── Arc sensor: aktualizuj wskaznik kolowy ───────────────────────────────
+    if (is_arc) {
+        lv_obj_t *arc = s_arc_widgets[screen_idx][tile_idx][row_idx];
+        if (arc) {
+            float fval;
+            const bool has_val = value && parse_first_float(value, &fval);
+            if (has_val) {
+                lv_arc_set_value(arc, (int16_t)fval);
+                lv_obj_t *val_lbl = s_row_labels[screen_idx][tile_idx][row_idx];
+                if (val_lbl) {
+                    char buf[24];
+                    if (row->unit[0])
+                        snprintf(buf, sizeof(buf), "%.1f%s", fval, row->unit);
+                    else
+                        snprintf(buf, sizeof(buf), "%.1f", fval);
+                    lv_label_set_text(val_lbl, buf);
+                    lv_obj_align(val_lbl, LV_ALIGN_CENTER, 0, 0);
+                }
+                // Dynamiczny kolor wskaznika dla temperatury / wilgotnosci
+                if (row->sensor_type == SensorType::Temperature ||
+                    row->sensor_type == SensorType::Humidity) {
+                    lv_obj_set_style_arc_color(arc,
+                        icon_color_for_value(row->sensor_type, fval),
+                        LV_PART_INDICATOR);
+                }
+            }
+        }
+        lv_obj_t *card = s_tile_cards[screen_idx][tile_idx];
+        if (card) {
+            lv_obj_set_style_bg_color(card,
+                online ? lv_color_hex(kColorCard) : lv_color_hex(kColorCardOffline), 0);
+            lv_obj_set_style_border_color(card,
+                online ? lv_color_hex(kColorAccent) : lv_color_hex(kColorDanger), 0);
+        }
+        board_display_unlock();
+        return;
+    }
+
+    // ── Tekstowy tryb (Switch / Presence / Sensor) ───────────────────────────
+    if (!lbl) { board_display_unlock(); return; }
+
     const bool compact = (screen->tiles[tile_idx].layout == TileLayout::Horizontal);
     char text[96] = {};
     format_row_value(row, value, text, sizeof(text), compact);
 
-    board_display_lock();
-
     lv_label_set_text(lbl, text);
 
-    if (is_switch) {
-        // Zmien kolor etykiety na wskaznik stanu ON/OFF + blask
+    if (is_presence) {
+        // Kolory: home=zielony, not_home=szary (wyszarzony), strefa=pomaranczowy
+        uint32_t col;
+        if      (value && strcmp(value, "home")     == 0) col = 0x22C55E; // zielony
+        else if (value && strcmp(value, "not_home") == 0) col = kColorMuted; // szary
+        else                                               col = 0xF6B84A; // pomaranczowy (np. "praca")
+        lv_obj_set_style_text_color(lbl, lv_color_hex(col), 0);
+        sensor_label_flash(lbl);
+    } else if (is_switch) {
+        // Kolor etykiety: ON=zielony, OFF=teal + krotki blask
         switch_label_flash(lbl, is_on);
 
-        // Przycisk: aktualizuj kolor tla, kółko wskaźnika i tekst stanu
-        lv_obj_t *btn = s_switch_btns[screen_idx][tile_idx][row_idx];
-        if (btn) {
-            lv_obj_set_style_bg_color(btn,
-                lv_color_hex(is_on ? kColorSwitchOnBtn : kColorSwitchOffBtn), 0);
-            lv_obj_set_style_bg_color(btn,
-                lv_color_hex(is_on ? kColorSwitchOnPress : kColorSwitchOffPress),
-                LV_STATE_PRESSED);
+        // Ikona: ON=kolor domenowy (zolta zarowka, niebieski wentylator itp.), OFF=szara
+        lv_obj_t *sw_icon = s_icon_labels[screen_idx][tile_idx][row_idx];
+        if (sw_icon) {
+            // Przywroc pelna widocznosc (bulb_off moglby przyciemnic)
+            lv_obj_set_style_opa(sw_icon, LV_OPA_COVER, 0);
+            lv_anim_delete(sw_icon, nullptr);
 
-            // Kółko wskaźnika: zielone = ON, czerwone = OFF
-            lv_obj_t *circle = s_switch_circles[screen_idx][tile_idx][row_idx];
-            if (circle) {
-                lv_obj_set_style_bg_color(circle,
-                    lv_color_hex(is_on ? 0x4CD97B : 0xF07863), 0);
-            }
-
-            // Etykieta: WLACZONY / WYLACZONY (child[1] = po kółku)
-            lv_obj_t *btn_lbl = lv_obj_get_child(btn, 1);
-            if (btn_lbl) {
-                lv_label_set_text(btn_lbl, is_on ? "WLACZONY" : "WYLACZONY");
-                lv_obj_set_style_text_color(btn_lbl,
-                    lv_color_hex(is_on ? 0x4CD97B : 0xF07863), 0);
+            const char *d = row->domain;
+            if (is_on) {
+                // ON: kolor ikony wg domeny + animacja dla zarowki i wentylatora
+                lv_obj_set_style_text_color(sw_icon, icon_color_for_row(row), 0);
+                if      (strcmp(d, "light") == 0) icon_anim_bulb_on(sw_icon);
+                else if (strcmp(d, "fan")   == 0) icon_anim_fan_on(sw_icon);
+            } else {
+                // OFF: szara ikona, brak animacji
+                lv_obj_set_style_text_color(sw_icon, lv_color_hex(kColorMuted), 0);
+                if (strcmp(d, "fan") == 0) icon_anim_stop(sw_icon);
+                // zarowka: szara opacita pełna (nie dimujemy — kolor wystarczy)
             }
         }
     } else {

@@ -1,6 +1,0 @@
-@echo off
-echo Sprawdzam/instaluje wymagane biblioteki...
-python -m pip install -r requirements.txt --quiet
-echo Uruchamiam edytor...
-python main.py
-pause

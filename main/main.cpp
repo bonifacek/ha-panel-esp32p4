@@ -3,10 +3,12 @@
 #include "ha_entities.h"
 #include "battery_monitor.h"
 #include "board_display.h"
-#include "camera_wake.h"
 #include "panel_ui.h"
 #include "web_config.h"
 #include "features_config.h"
+#include "speaker.h"
+#include "speaker_sched.h"
+#include "tts_player.h"
 #include "esp_hosted_ota.h"
 #include "esp_hosted.h"
 
@@ -17,7 +19,7 @@
 // Uruchom serwer: cd ..\managed_components\espressif__esp_hosted\slave\build
 //                 python -m http.server 8080
 #define ENABLE_C6_OTA   0
-#define C6_OTA_URL      "http://192.168.1.50:8080/network_adapter.bin"
+#define C6_OTA_URL      "http://192.168.1.100:8080/network_adapter.bin"
 // ────────────────────────────────────────────────────────────────────────────
 
 #include "esp_check.h"
@@ -46,6 +48,7 @@ static HwFeatures s_hw_features;
 static void handle_command(size_t screen_idx, size_t tile_idx,
                            size_t row_idx, bool turn_on)
 {
+    speaker_play(SpeakerSound::Beep);   // krotki pisk — potwierdzenie dotyku
     ha_service_send_command(screen_idx, tile_idx, row_idx, turn_on);
 }
 
@@ -59,6 +62,8 @@ static void handle_ha_state(size_t screen_idx, size_t tile_idx,
 static void handle_ha_status(bool connected)
 {
     panel_ui_set_ha_status(connected ? "online" : "offline");
+    if (connected)
+        speaker_play(SpeakerSound::Chime);  // dzwon przy polaczeniu z HA
 }
 
 static void start_wifi_config_portal()
@@ -197,6 +202,7 @@ extern "C" void app_main(void)
     init_spiffs();       // montuje /storage (SPIFFS 7 MB) — musi byc przed ha_dashboard_load
     ha_config_load(&s_ha_config);
     hw_features_load(&s_hw_features);
+    sched_load(nullptr); // ładuje harmonogram głośności (z NVS lub domyślne)
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -213,7 +219,12 @@ extern "C" void app_main(void)
     panel_ui_create(handle_command);
     board_display_unlock();
 
-    if (s_hw_features.camera)  camera_wake_init();
+    if (s_hw_features.speaker) {
+        speaker_init();
+        // TTS init: silnik domyslny = tts.piper, jezyk pl-PL
+        // Uzytkownik moze nadpisac przez panel WWW -> /api/tts_cfg
+        tts_init(&s_ha_config, "tts.piper", "pl-PL");
+    }
     if (s_hw_features.battery) xTaskCreatePinnedToCore(battery_task, "battery_task", 8192, nullptr, 4, nullptr, 0);
     xTaskCreatePinnedToCore(network_task, "network_task", 8192,  nullptr, 5, nullptr, 0);
 }

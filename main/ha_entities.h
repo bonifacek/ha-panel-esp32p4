@@ -7,7 +7,14 @@ static constexpr size_t kHaMaxScreens = 8;
 static constexpr size_t kHaMaxTiles   = 12;
 static constexpr size_t kHaMaxRows    = 6;
 
-enum class EntityKind { Sensor, Switch };
+enum class EntityKind { Sensor, Switch, Presence, Device };
+
+// Sposob wyswietlania wiersza encji
+enum class RowDisplayMode : uint8_t {
+    Auto = 0,  // domyslny (tekst)
+    Text = 1,  // zawsze tekst
+    Arc  = 2,  // wskaznik kolowy (tylko dla sensorow)
+};
 
 // Typ sensora — uzywany do doboru ikony i dynamicznych kolorow
 enum class SensorType : uint8_t {
@@ -26,9 +33,15 @@ struct HaRow {
     char label[48];
     char attribute[32];  // "" = stan glowny ("s"), "temperature" = atrybut
     char unit[8];        // "", "°C", "%", "W", ...
-    EntityKind kind;
-    SensorType sensor_type;
+    EntityKind    kind;
+    SensorType    sensor_type;
+    RowDisplayMode display_mode;  // sposob wyswietlania (tekst / kolo)
     char domain[24];
+};
+
+// Typ kafelka
+enum class TileType : uint8_t {
+    Normal = 0,  // standardowy kafelek z encjami
 };
 
 // Sposob wyswietlania kafelka
@@ -40,6 +53,7 @@ enum class TileLayout : uint8_t {
 // Kafelek — agreguje wiele wierszy (encji) w jednej karcie
 struct HaTile {
     char label[48];
+    TileType type;            // zawsze Normal
     HaRow rows[kHaMaxRows];
     size_t row_count;
     TileLayout layout;  // sposob wyswietlania

@@ -3,7 +3,10 @@
 #include "cJSON.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_websocket_client.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include <string.h>
 
@@ -16,6 +19,14 @@ static HaRuntimeConfig               s_config;
 static bool                          s_connected;
 static bool                          s_authenticated;
 static int                           s_msg_id;
+
+// Timestamp (ms) kiedy ostatnio utracono połączenie; 0 = połączone
+static int64_t s_disconnected_since_ms = 0;
+
+// Śledzenie subskrypcji — czy HA potwierdził subscribe_entities?
+static int     s_sub_id        = 0;    // msg_id wysłanego subscribe_entities
+static bool    s_sub_confirmed = false; // HA odpowiedział success:true dla s_sub_id
+static int64_t s_last_sub_ms   = 0;   // czas ostatniego send_subscribe (ms uptime)
 
 // ---------------------------------------------------------------------------
 // Bufor skladania fragmentowanych wiadomosci WebSocket
@@ -58,7 +69,10 @@ static void send_subscribe()
 {
     cJSON *msg = cJSON_CreateObject();
     cJSON_AddStringToObject(msg, "type", "subscribe_entities");
-    cJSON_AddNumberToObject(msg, "id", ++s_msg_id);
+    s_sub_id        = ++s_msg_id;
+    s_sub_confirmed = false;
+    s_last_sub_ms   = esp_timer_get_time() / 1000LL;
+    cJSON_AddNumberToObject(msg, "id", s_sub_id);
     cJSON *ids = cJSON_AddArrayToObject(msg, "entity_ids");
 
     // Prosty zestaw unikalnych entity_id (maks. 128 encji)
@@ -219,11 +233,28 @@ static void handle_message(const char *data, int len)
 
     } else if (strcmp(t, "result") == 0) {
         cJSON *success = cJSON_GetObjectItemCaseSensitive(root, "success");
-        if (cJSON_IsFalse(success)) {
-            cJSON *err = cJSON_GetObjectItemCaseSensitive(root, "error");
-            cJSON *msg = cJSON_GetObjectItemCaseSensitive(err, "message");
-            ESP_LOGW(TAG, "Command failed: %s",
-                     (cJSON_IsString(msg) && msg->valuestring) ? msg->valuestring : "?");
+        cJSON *id_j    = cJSON_GetObjectItemCaseSensitive(root, "id");
+        int    msg_id  = cJSON_IsNumber(id_j) ? (int)id_j->valuedouble : -1;
+        bool   is_sub  = (s_sub_id > 0 && msg_id == s_sub_id);
+
+        if (cJSON_IsTrue(success)) {
+            if (is_sub) {
+                ESP_LOGI(TAG, "Subskrypcja potwierdzona (id=%d)", msg_id);
+                s_sub_confirmed = true;
+            }
+        } else {
+            cJSON *err     = cJSON_GetObjectItemCaseSensitive(root, "error");
+            cJSON *err_msg = err ? cJSON_GetObjectItemCaseSensitive(err, "message") : nullptr;
+            const char *reason = (cJSON_IsString(err_msg) && err_msg->valuestring)
+                                 ? err_msg->valuestring : "?";
+            if (is_sub) {
+                // HA jeszcze nie gotowe lub problem — watchdog ponowi subscribe
+                ESP_LOGW(TAG, "Subskrypcja nieudana (id=%d): %s — retry za chwile",
+                         msg_id, reason);
+                s_sub_confirmed = false;   // watchdog wyzwoli retry
+            } else {
+                ESP_LOGW(TAG, "Komenda nieudana (id=%d): %s", msg_id, reason);
+            }
         }
     }
 
@@ -242,14 +273,19 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
     switch (event_id) {
     case WEBSOCKET_EVENT_CONNECTED:
         ESP_LOGI(TAG, "WS connected");
-        s_connected     = true;
-        s_authenticated = false;
+        s_connected            = true;
+        s_authenticated        = false;
+        s_disconnected_since_ms = 0;   // watchdog: połączono
         break;
 
     case WEBSOCKET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "WS disconnected");
         s_connected     = false;
         s_authenticated = false;
+        s_sub_confirmed = false;
+        s_sub_id        = 0;
+        if (s_disconnected_since_ms == 0)
+            s_disconnected_since_ms = esp_timer_get_time() / 1000LL;
         if (s_status_cb) s_status_cb(false);
         break;
 
@@ -285,11 +321,63 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
         ESP_LOGE(TAG, "WS error");
         s_connected     = false;
         s_authenticated = false;
+        s_sub_confirmed = false;
+        s_sub_id        = 0;
+        if (s_disconnected_since_ms == 0)
+            s_disconnected_since_ms = esp_timer_get_time() / 1000LL;
         if (s_status_cb) s_status_cb(false);
         break;
 
     default:
         break;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Watchdog — pilnuje połączenia, wymusza reconnect gdy offline > 15s
+// ---------------------------------------------------------------------------
+static void watchdog_task(void *)
+{
+    // Odczekaj chwilę po starcie żeby WS zdążył się połączyć
+    vTaskDelay(pdMS_TO_TICKS(20000));
+
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(10000));   // sprawdzaj co 10s
+
+        if (!s_client) continue;
+
+        int64_t now_ms = esp_timer_get_time() / 1000LL;
+
+        // ── Przypadek 1: połączony i uwierzytelniony ─────────────────────────
+        if (s_connected && s_authenticated) {
+            // Subskrypcja niepotwierdzona? → ponów po 5 s od ostatniej próby
+            if (!s_sub_confirmed && s_last_sub_ms > 0 &&
+                (now_ms - s_last_sub_ms) >= 5000) {
+                ESP_LOGW(TAG, "Watchdog: subskrypcja niepotwierdzona — ponawiam");
+                send_subscribe();
+            }
+            // Połączenie wygląda OK — pomiń logikę offline
+            continue;
+        }
+
+        // ── Przypadek 2: offline ─────────────────────────────────────────────
+        if (s_disconnected_since_ms == 0) {
+            s_disconnected_since_ms = now_ms;
+            continue;
+        }
+
+        int64_t offline_ms = now_ms - s_disconnected_since_ms;
+        ESP_LOGW(TAG, "Watchdog: offline %.1f s", offline_ms / 1000.0f);
+
+        if (offline_ms >= 15000) {
+            // Wbudowany auto-reconnect nie działa — wymuś ręcznie
+            ESP_LOGW(TAG, "Watchdog: wymuszam reconnect");
+            esp_websocket_client_stop(s_client);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            esp_websocket_client_start(s_client);
+            // Zresetuj timer żeby nie hammerować co iterację
+            s_disconnected_since_ms = now_ms;
+        }
     }
 }
 
@@ -336,6 +424,9 @@ void ha_service_start(const HaRuntimeConfig *config,
                                    ws_event_handler, nullptr);
     esp_websocket_client_start(s_client);
     ESP_LOGI(TAG, "WS client -> %s", s_config.url);
+
+    // Uruchom watchdog — pilnuje połączenia niezależnie od wbudowanego auto-reconnect
+    xTaskCreate(watchdog_task, "ha_ws_wdog", 3072, nullptr, 3, nullptr);
 }
 
 void ha_service_send_command(size_t screen_idx, size_t tile_idx,
