@@ -1,196 +1,240 @@
-# ESP32-P4 Home Assistant Panel
+# 🖥️ ESP32-P4 Home Assistant Panel
 
-Firmware for the **Guition JC8012P4A1C** touchscreen panel (ESP32-P4, 1280×800 display)
-with **Home Assistant** integration via WebSocket API. UI built on LVGL 9.x with entity tiles.
+<p align="center">
+  <img src="ikony.jpg" alt="ESP32-P4 HA Panel icons" width="600"/>
+</p>
 
-## Hardware
+<p align="center">
+  <img src="https://img.shields.io/badge/ESP32--P4-ESP--IDF%20v5.4-blue?logo=espressif" />
+  <img src="https://img.shields.io/badge/Home%20Assistant-WebSocket%20API-41BDF5?logo=home-assistant" />
+  <img src="https://img.shields.io/badge/LVGL-9.x-green" />
+  <img src="https://img.shields.io/badge/status-beta-orange" />
+  <img src="https://img.shields.io/badge/license-Apache%202.0-lightgrey" />
+</p>
 
-| Component | Description |
-|-----------|-------------|
-| MCU | ESP32-P4 (dual-core RISC-V 400 MHz, 32 MB PSRAM) |
-| Wi-Fi / BLE | ESP32-C6 (slave module, ESP-Hosted SDIO) |
-| Display | 1280×800 MIPI DSI, JD9365 driver |
-| Touch | GT911 (I2C) |
-| Audio | ES8311 (optional, TTS from HA) |
-| BSP | Guition `common_components/bsp` |
-
-## Features
-
-- **LVGL Tiles** — configured via GUI, automatic layout or manual positioning
-- **HA Entities** — sensors (temperature, humidity, power, CPU, illuminance), switches (light, fan, switch, input_boolean), presence (person, device_tracker), devices (device — colored dot)
-- **Arc Mode** — sensors displayed as a 270° circular gauge with dynamic color
-- **Touchable Switches** — icon + label change color based on ON/OFF state, no separate button
-- **AP Configuration** — when Wi-Fi is not set up, starts an access point `HA-PANEL-*`, portal at `http://192.168.4.1`
-- **Dashboard via HA Addon** — tile and entity editor in the browser, saved to SPIFFS on the device
-- **C6 OTA** — optional Wi-Fi module firmware update (disabled by default)
-
-## Repository Structure
-
-```
-├── main/               # ESP32-P4 firmware
-│   ├── ha_entities.*   # Entity definitions and dashboard JSON parsing
-│   ├── ha_service.*    # HA WebSocket client (esp-websocket-client)
-│   ├── ha_config.*     # Configuration (URL, token) from NVS + web
-│   ├── panel_ui.*      # LVGL UI — tiles, rows, animations
-│   ├── web_config.*    # HTTP config server for Wi-Fi / HA
-│   └── main.cpp        # Entry point, initialization
-├── ha_addon/           # Home Assistant Addon (Python + web)
-│   ├── app.py          # Flask server — HA proxy + device write
-│   ├── config.yaml     # HA addon manifest
-│   └── static/         # Addon UI (app.js, style.css)
-├── components/         # Custom components (fonts, icons)
-├── common_components/  # Vendor BSP (display, touch, audio)
-├── CMakeLists.txt
-├── sdkconfig.defaults
-└── idf_component.yml   # Dependencies (LVGL, esp-websocket-client, cJSON…)
-```
-
-## Requirements
-
-- **ESP-IDF v5.4** — `C:\Espressif\frameworks\esp-idf-v5.4`
-- Python 3.11 (bundled with ESP-IDF)
-- `idf.py` tool
-
-## Building and Flashing
-
-```powershell
-# Activate IDF environment (Windows PowerShell)
-$env:IDF_PATH = "C:\Espressif\frameworks\esp-idf-v5.4"
-$env:PYTHONUTF8 = "1"
-# Run activate.py or export.ps1 from ESP-IDF
-
-idf.py set-target esp32p4
-idf.py build
-idf.py -p COMXX flash
-```
-
-On first boot the panel starts AP `HA-PANEL-<MAC>`.
-Connect to it and configure Wi-Fi and HA address/token at `http://192.168.4.1`.
-
-## HA Addon — Dashboard Editor
-
-The addon is located in the `ha_addon/` directory. Install as a local addon in Home Assistant:
-
-1. Copy `ha_addon/` to `<config>/addons/esp32p4_panel/`
-2. In HA: **Settings → Add-ons → Add-on Store → ⋮ → Check for updates**
-3. Install "ESP32-P4 Panel" and start it
-4. In the addon options set `device_ip` — the panel's IP address on the local network
-
-## Entity Configuration
-
-Tiles and entities are configured via the HA addon or directly via API:
-`PUT http://<panel_ip>/api/dashboard` with JSON.
-
-Row fields (`HaRow`):
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `entity_id` | string | HA entity ID (e.g. `sensor.temperatura`) |
-| `label` | string | Label displayed on the panel |
-| `attribute` | string | Optional attribute (e.g. `current_temperature`) |
-| `unit` | string | Unit (e.g. `°C`, `%`, `W`) |
-| `sensor_type` | string | `temperature`, `humidity`, `cpu`, `memory`, `power`, `illuminance`, `switch`, `presence`, `device` |
-| `display_mode` | string | `text` (default) or `arc` (circular gauge) |
-
-## License
-
-Private project / personal use. BSP code originates from Guition vendor examples.
+> **The first open-source firmware for the Guition JC8012P4A1C (ESP32-P4, 10.1" MIPI-DSI) with native Home Assistant integration, built-in HA Addon, TTS support and motion-activated display.**
 
 ---
 
-Firmware dla panelu dotykowego **Guition JC8012P4A1C** (ESP32-P4, ekran 1280×800) z integracją
-**Home Assistant** przez WebSocket API. Interfejs oparty na LVGL 9.x z kafelkami encji.
+## ✨ Features
 
-## Sprzęt
+- **LVGL 9.x UI** — entity tiles with automatic or manual layout
+- **Home Assistant WebSocket API** — real-time entity state updates
+- **Supported entity types** — sensors (temperature, humidity, power, CPU, illuminance), switches (light, fan, switch, input_boolean), presence (person, device_tracker)
+- **Arc mode** — sensors displayed as 270° circular gauge with dynamic color
+- **Touchable switches** — icon + label change color based on ON/OFF state
+- **TTS via Piper** — text-to-speech audio output through onboard speaker
+- **Motion-activated display** — camera wakes the screen on movement detection
+- **AP Configuration Portal** — on first boot starts `HA-PANEL-<MAC>` access point, configure at `http://192.168.4.1`
+- **HA Addon (Dashboard Editor)** — tile and entity editor in the browser, saved to SPIFFS on the device
+- **OTA updates** — optional Wi-Fi module (C6) firmware update
 
-| Komponent | Opis |
-|-----------|------|
-| MCU | ESP32-P4 (dual-core RISC-V 400 MHz, 32 MB PSRAM) |
-| Wi-Fi / BLE | ESP32-C6 (moduł slave, ESP-Hosted SDIO) |
-| Wyświetlacz | 1280×800 MIPI DSI, sterownik JD9365 |
-| Dotyk | GT911 (I2C) |
-| Dźwięk | ES8311 (opcjonalnie, TTS z HA) |
-| BSP | Guition `common_components/bsp` |
+---
 
-## Funkcje
+## 🛒 Hardware
 
-- **Kafelki LVGL** — konfigurowane przez GUI, automatyczny układ lub ręczne pozycjonowanie
-- **Encje HA** — sensory (temperatura, wilgotność, moc, CPU, oświetlenie), przełączniki (light, fan, switch, input_boolean), obecność (person, device_tracker), urządzenia (device — kolorowa kropka)
-- **Tryb Arc** — sensory wyświetlane jako wskaźnik kołowy 270° z dynamicznym kolorem
-- **Przełączniki dotykowe** — ikonka + etykieta zmieniają kolor na stan ON/OFF bez osobnego przycisku
-- **Konfiguracja przez AP** — przy braku Wi-Fi uruchamia punkt dostępowy `HA-PANEL-*`, portal pod `http://192.168.4.1`
-- **Dashboard przez HA Addon** — edytor kafelków i encji w przeglądarce, zapis do SPIFFS na urządzeniu
-- **OTA C6** — opcjonalna aktualizacja firmware modułu Wi-Fi (domyślnie wyłączona)
+| Component   | Description                                        |
+|-------------|----------------------------------------------------|
+| MCU         | ESP32-P4 (dual-core RISC-V 400 MHz, 32 MB PSRAM)  |
+| Wi-Fi / BLE | ESP32-C6 (slave module, ESP-Hosted SDIO)           |
+| Display     | 10.1" 1280×800 MIPI-DSI, JD9365 driver             |
+| Touch       | GT911 (I2C, capacitive)                            |
+| Audio       | ES8311 codec + speaker (TTS)                       |
+| Camera      | Motion detection (wake on motion)                  |
+| Battery     | Up to 8h battery life                              |
 
-## Struktura repozytorium
+**Buy the panel:** [Guition JC8012P4A1C on AliExpress](https://www.aliexpress.com)
 
-```
-├── main/               # Firmware ESP32-P4
-│   ├── ha_entities.*   # Definicje encji i parsowanie JSON dashboardu
-│   ├── ha_service.*    # Klient WebSocket HA (esp-websocket-client)
-│   ├── ha_config.*     # Konfiguracja (URL, token) z NVS + web
-│   ├── panel_ui.*      # UI LVGL — kafelki, wiersze, animacje
-│   ├── web_config.*    # HTTP serwer konfiguracji Wi-Fi / HA
-│   └── main.cpp        # Punkt wejścia, inicjalizacja
-├── ha_addon/           # Home Assistant Addon (Python + web)
-│   ├── app.py          # Serwer Flask — proxy do HA + zapis na urządzenie
-│   ├── config.yaml     # Manifest addonu HA
-│   └── static/         # UI addonu (app.js, style.css)
-├── components/         # Komponenty własne (fonts, ikony)
-├── common_components/  # BSP producenta (display, touch, audio)
-├── CMakeLists.txt
-├── sdkconfig.defaults
-└── idf_component.yml   # Zależności (LVGL, esp-websocket-client, cJSON…)
-```
+---
 
-## Wymagania
+## 🚀 Getting Started
 
-- **ESP-IDF v5.4** — `C:\Espressif\frameworks\esp-idf-v5.4`
-- Python 3.11 (dołączony z ESP-IDF)
-- Narzędzie `idf.py`
+### Requirements
 
-## Budowanie i flashowanie
+- **ESP-IDF v5.4**
+- Python 3.11
+- `idf.py` tool
 
-```powershell
-# Aktywacja środowiska IDF (Windows PowerShell)
+### Build & Flash
+
+```bash
+# Activate ESP-IDF environment (Windows PowerShell)
 $env:IDF_PATH = "C:\Espressif\frameworks\esp-idf-v5.4"
 $env:PYTHONUTF8 = "1"
-# Uruchom activate.py lub skrypt export.ps1 z ESP-IDF
-
 
 idf.py set-target esp32p4
 idf.py build
 idf.py -p COMXX flash
 ```
 
-Po pierwszym uruchomieniu panel uruchomi AP `HA-PANEL-<MAC>`.
-Połącz się z nim i skonfiguruj Wi-Fi oraz adres/token HA pod `http://192.168.4.1`.
+### First Boot
 
-## HA Addon — edytor dashboardu
+1. Panel starts AP: `HA-PANEL-<MAC>`
+2. Connect to it with your phone or PC
+3. Open `http://192.168.4.1`
+4. Enter your Wi-Fi credentials and Home Assistant URL + Long-Lived Token
+5. Panel reboots and connects to HA automatically
 
-Addon dostępny w katalogu `ha_addon/`. Instalacja jako lokalny addon w Home Assistant:
+---
 
-1. Skopiuj katalog `ha_addon/` do `<config>/addons/esp32p4_panel/`
+## 🏠 HA Addon — Dashboard Editor
+
+The addon lets you configure tiles and entities from your browser.
+
+**Installation:**
+1. Copy `ha_addon/` to `<HA config>/addons/esp32p4_panel/`
+2. In HA: **Settings → Add-ons → Add-on Store → ⋮ → Check for updates**
+3. Install **"ESP32-P4 Panel"** and start it
+4. In addon options set `device_ip` — your panel's IP address
+
+---
+
+## ⚙️ Entity Configuration
+
+Tiles are configured via the HA Addon or directly via API:
+
+```
+PUT http://<panel_ip>/api/dashboard
+Content-Type: application/json
+```
+
+| Field          | Type   | Description                                                                 |
+|----------------|--------|-----------------------------------------------------------------------------|
+| `entity_id`    | string | HA entity ID (e.g. `sensor.temperature`)                                    |
+| `label`        | string | Label shown on the panel                                                    |
+| `attribute`    | string | Optional attribute (e.g. `current_temperature`)                             |
+| `unit`         | string | Unit (e.g. `°C`, `%`, `W`)                                                  |
+| `sensor_type`  | string | `temperature`, `humidity`, `cpu`, `memory`, `power`, `illuminance`, `switch`, `presence`, `device` |
+| `display_mode` | string | `text` (default) or `arc` (circular gauge)                                  |
+
+---
+
+## 📁 Repository Structure
+
+```
+├── main/               # ESP32-P4 firmware (C/C++)
+│   ├── ha_entities.*   # Entity definitions and dashboard JSON parsing
+│   ├── ha_service.*    # HA WebSocket client
+│   ├── ha_config.*     # Configuration (URL, token) stored in NVS
+│   ├── panel_ui.*      # LVGL UI — tiles, rows, animations
+│   ├── web_config.*    # HTTP config server (Wi-Fi / HA setup)
+│   └── main.cpp        # Entry point
+├── ha_addon/           # Home Assistant Addon (Python + Flask)
+│   ├── app.py          # HA proxy + device write API
+│   ├── config.yaml     # HA addon manifest
+│   └── static/         # Addon web UI
+├── components/         # Custom fonts and icons
+├── common_components/  # Guition BSP (display, touch, audio)
+├── CMakeLists.txt
+├── sdkconfig.defaults
+└── idf_component.yml   # Dependencies (LVGL, esp-websocket-client, cJSON)
+```
+
+---
+
+## 📋 Status
+
+> ⚠️ **Beta** — core features work, stability testing in progress.  
+> Known issue: occasional random resets under investigation.  
+> Reconnection after HA restart — being improved.
+
+---
+
+## 🗺️ Planned
+
+- [ ] Stable reconnect after HA restart
+- [ ] Fix random resets (crash analysis in progress)
+- [ ] Face recognition (experimental)
+- [ ] More entity types
+- [ ] Screenshot / display capture tool
+
+---
+
+## 📜 License
+
+**Apache 2.0** — free for personal and non-commercial use.  
+BSP code originates from Guition vendor examples.  
+If you use this project commercially, please contact the author.
+
+---
+
+---
+
+# 🇵🇱 Polski / Polish
+
+> **Pierwszy otwarty firmware dla panelu Guition JC8012P4A1C (ESP32-P4, 10.1" MIPI-DSI) z natywną integracją Home Assistant, własnym addonem HA, obsługą TTS i aktywacją ekranu przez wykrycie ruchu.**
+
+---
+
+## ✨ Funkcje
+
+- **UI LVGL 9.x** — kafelki encji z automatycznym lub ręcznym układem
+- **WebSocket API Home Assistant** — aktualizacje stanu encji w czasie rzeczywistym
+- **Obsługiwane typy encji** — sensory (temperatura, wilgotność, moc, CPU, oświetlenie), przełączniki (light, fan, switch, input_boolean), obecność (person, device_tracker)
+- **Tryb Arc** — sensory jako wskaźnik kołowy 270° z dynamicznym kolorem
+- **Przełączniki dotykowe** — ikona + etykieta zmieniają kolor na stan ON/OFF
+- **TTS przez Piper** — synteza mowy przez wbudowany głośnik
+- **Aktywacja ekranu ruchem** — kamera wykrywa ruch i budzi wyświetlacz
+- **Portal konfiguracyjny AP** — przy pierwszym uruchomieniu tworzy `HA-PANEL-<MAC>`, konfiguracja pod `http://192.168.4.1`
+- **Addon HA (edytor dashboardu)** — edytor kafelków i encji w przeglądarce, zapis do SPIFFS
+- **OTA** — opcjonalna aktualizacja firmware modułu Wi-Fi (C6)
+
+---
+
+## 🚀 Szybki start
+
+### Wymagania
+
+- **ESP-IDF v5.4**
+- Python 3.11
+- Narzędzie `idf.py`
+
+### Budowanie i flashowanie
+
+```bash
+# Aktywacja środowiska IDF (Windows PowerShell)
+$env:IDF_PATH = "C:\Espressif\frameworks\esp-idf-v5.4"
+$env:PYTHONUTF8 = "1"
+
+idf.py set-target esp32p4
+idf.py build
+idf.py -p COMXX flash
+```
+
+### Pierwsze uruchomienie
+
+1. Panel uruchamia AP: `HA-PANEL-<MAC>`
+2. Połącz się z telefonem lub PC
+3. Otwórz `http://192.168.4.1`
+4. Wprowadź dane Wi-Fi oraz adres HA i Long-Lived Token
+5. Panel restartuje się i łączy z HA automatycznie
+
+---
+
+## 🏠 Addon HA — Edytor dashboardu
+
+**Instalacja:**
+1. Skopiuj `ha_addon/` do `<config HA>/addons/esp32p4_panel/`
 2. W HA: **Ustawienia → Dodatki → Sklep z dodatkami → ⋮ → Sprawdź aktualizacje**
-3. Zainstaluj „ESP32-P4 Panel" i uruchom
-4. W opcjach addonu ustaw `device_ip` — adres IP panelu w sieci lokalnej
+3. Zainstaluj **„ESP32-P4 Panel"** i uruchom
+4. W opcjach addonu ustaw `device_ip` — adres IP panelu
 
-## Konfiguracja encji
+---
 
-Kafelki i encje konfiguruje się przez addon HA lub bezpośrednio przez API:
-`PUT http://<panel_ip>/api/dashboard` z JSON-em.
+## 📋 Status projektu
 
-Pola wiersza (`HaRow`):
+> ⚠️ **Beta** — główne funkcje działają, trwają testy stabilizacji.  
+> Znany problem: losowe restarty — w trakcie analizy.  
+> Reconnect po restarcie HA — w trakcie poprawiania.
 
-| Pole | Typ | Opis |
-|------|-----|------|
-| `entity_id` | string | ID encji w HA (np. `sensor.temperatura`) |
-| `label` | string | Etykieta wyświetlana na panelu |
-| `attribute` | string | Opcjonalny atrybut (np. `current_temperature`) |
-| `unit` | string | Jednostka (np. `°C`, `%`, `W`) |
-| `sensor_type` | string | `temperature`, `humidity`, `cpu`, `memory`, `power`, `illuminance`, `switch`, `presence`, `device` |
-| `display_mode` | string | `text` (domyślnie) lub `arc` (wskaźnik kołowy) |
+---
 
-## Licencja
+## 📜 Licencja
 
-Projekt prywatny / do użytku własnego. Kod BSP pochodzi z przykładów producenta Guition.
+**Apache 2.0** — projekt bezpłatny do użytku osobistego i niekomercyjnego.  
+Kod BSP pochodzi z przykładów producenta Guition.  
+W przypadku użycia komercyjnego prosimy o kontakt z autorem.
+
+---
+
+*Made with ❤️ in Bydgoszcz, Poland 🇵🇱*
