@@ -152,9 +152,9 @@ Content-Type: application/json
 
 ## 📜 License
 
-**Apache 2.0** — free for personal and non-commercial use.  
-BSP code originates from Guition vendor examples.  
-If you use this project commercially, please contact the author.
+## License
+Licensed under the Apache 2.0 License. 
+BSP code originates from Guition vendor examples.
 
 ---
 
