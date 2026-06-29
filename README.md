@@ -231,9 +231,9 @@ idf.py -p COMXX flash
 
 ## 📜 Licencja
 
-**Apache 2.0** — projekt bezpłatny do użytku osobistego i niekomercyjnego.  
-Kod BSP pochodzi z przykładów producenta Guition.  
-W przypadku użycia komercyjnego prosimy o kontakt z autorem.
+## License
+Licensed under the Apache 2.0 License. 
+BSP code originates from Guition vendor examples.
 
 ---
 
